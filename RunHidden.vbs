@@ -15,15 +15,17 @@ If Not fso.FolderExists(logDir) Then
     On Error GoTo 0
 End If
 
-WriteLog "Windows вызвала RunHidden.vbs."
+' Keep this script ASCII-only: Windows Script Host may misread UTF-8
+' source files without a Unicode signature.
+WriteLog "RunHidden.vbs was started."
 
 If Not fso.FileExists(pythonw) Then
-    WriteLog "ОШИБКА: не найден .venv\Scripts\pythonw.exe."
+    WriteLog "ERROR: .venv\Scripts\pythonw.exe was not found."
     WScript.Quit 2
 End If
 
 If Not fso.FileExists(runner) Then
-    WriteLog "ОШИБКА: не найден BackgroundRunner.py."
+    WriteLog "ERROR: BackgroundRunner.py was not found."
     WScript.Quit 2
 End If
 
@@ -36,10 +38,10 @@ WScript.Sleep 8000
 On Error Resume Next
 shell.Run command, 0, False
 If Err.Number <> 0 Then
-    WriteLog "ОШИБКА запуска pythonw.exe: " & Err.Description
+    WriteLog "ERROR starting pythonw.exe: " & Err.Description
     Err.Clear
 Else
-    WriteLog "Команда запуска фонового процесса отправлена."
+    WriteLog "Background process launch command was sent."
 End If
 On Error GoTo 0
 
