@@ -1,0 +1,57 @@
+[
+  {
+    "id": "midnight",
+    "name": "Полночь",
+    "description": "Холодная тёмная палитра",
+    "background": "#111827",
+    "accent": "#60A5FA",
+    "outgoing": "#1D4ED8",
+    "incoming": "#263244",
+    "text": "#F9FAFB",
+    "muted": "#AAB8C6"
+  },
+  {
+    "id": "sakura",
+    "name": "Сакура",
+    "description": "Мягкие розовые оттенки",
+    "background": "#FFF1F5",
+    "accent": "#DB2777",
+    "outgoing": "#FBCFE8",
+    "incoming": "#FFFFFF",
+    "text": "#4A1830",
+    "muted": "#8A6074"
+  },
+  {
+    "id": "moss",
+    "name": "Мох",
+    "description": "Спокойные зелёные оттенки",
+    "background": "#14231C",
+    "accent": "#86EFAC",
+    "outgoing": "#166534",
+    "incoming": "#23372C",
+    "text": "#F0FDF4",
+    "muted": "#A9C3B1"
+  },
+  {
+    "id": "lavender",
+    "name": "Лаванда",
+    "description": "Светлая сиреневая палитра",
+    "background": "#F5F3FF",
+    "accent": "#7C3AED",
+    "outgoing": "#DDD6FE",
+    "incoming": "#FFFFFF",
+    "text": "#2E1065",
+    "muted": "#75638C"
+  },
+  {
+    "id": "ember",
+    "name": "Уголь и янтарь",
+    "description": "Тёплая тёмная палитра",
+    "background": "#211A17",
+    "accent": "#F59E0B",
+    "outgoing": "#92400E",
+    "incoming": "#352720",
+    "text": "#FFFBEB",
+    "muted": "#C8B7A1"
+  }
+]

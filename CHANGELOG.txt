@@ -1,0 +1,184 @@
+TELEGRAM THEME MAKER 3.7.1
+==========================
+- Добавлена автоматическая проверка стабильных GitHub Releases при запуске фонового бота.
+- Обновления скачиваются только из публичного репозитория проекта и проверяются по SHA-256.
+- .env, .venv, user_data, logs и локальные файлы состояния сохраняются.
+- Добавлен откат файлов проекта, если применение обновления завершилось ошибкой.
+- Добавлена команда /version.
+- Добавлен GitHub Actions workflow для сборки ZIP-релиза Windows и файла SHA-256 по тегу vX.Y.Z.
+
+TELEGRAM THEME MAKER 3.7.0
+==========================
+
+- Added optional Windows auto-start after the current user signs in.
+- The bot starts hidden in the background; no CMD window is left open.
+- Added a bounded background log at logs/bot.log, with the previous log kept
+  separately when the active log exceeds 2 MB.
+- Added Install-Autostart.vbs and Remove-Autostart.vbs to enable or disable
+  auto-start without administrator permissions or third-party utilities.
+- Added Stop-Bot.vbs to stop only this project’s background pythonw process.
+- The installer starts the bot immediately after creating the startup shortcut.
+- Existing manual Start.bat launch remains available and unchanged.
+
+Theme Maker 3.6.0
+=================
+
+- Automatic message text is recalculated after changing either bubble color or opacity.
+- Message text contrast is selected against both incoming and outgoing bubbles after
+  compositing their opacity over the chat background; the algorithm maximizes the
+  weaker of the two contrast ratios.
+- Automatically generated secondary text now retains at least 4.5:1 contrast where
+  the selected primary text allows it.
+- Reset now restores the original photo-derived palette in photo mode instead of
+  silently switching to the unrelated default blue theme.
+- Reset preserves the theme name, wallpaper and bubble opacity; only colors return
+  to their initial values.
+- Each uploaded wallpaper receives a unique filename, so uploading a second photo
+  cannot silently replace the background file used by an earlier theme session.
+- The launcher process now acquires a local single-instance lock, preventing two
+  copies in the same project folder from polling Telegram getUpdates simultaneously.
+- Starting the photo workflow clears stale editor/input state before waiting for a
+  new image.
+
+Validation performed for this build:
+- Python syntax compilation.
+- Contrast regression checks across dark/light bubbles and opacity changes.
+- Photo palette reset behavior and preservation of name/opacity.
+- Unique wallpaper path generation.
+- Local process-lock behavior on the current platform.
+
+Known limitation: active theme settings are still held in memory. Restarting the bot
+clears unfinished editing sessions; exported files and uploaded wallpaper files remain
+on disk. Persistent project recovery is a separate future improvement.
+
+Theme Maker 3.5.0
+=================
+
+- Photo workflow now keeps the exact palette extracted from the uploaded image.
+- In photo mode, editing a color offers only HEX values found in that image instead
+  of the generic black/red/blue named-color list.
+- Added "Перемешать цвета": creates a different theme combination from the same
+  image palette without asking the user to upload the photo again.
+- The shuffle action preserves the uploaded wallpaper, theme name and bubble opacity.
+- The extracted-photo palette remains available after changing colors, transparency,
+  theme name, or navigating back to the editor.
+- Manual theme mode still offers the original named-color picker.
+
+Validation performed for this build:
+- Python syntax compilation.
+- Image palette extraction and generated theme variants.
+- Extracted-color callback validation and application.
+- Photo-mode picker shows image colors and shuffle action; manual mode keeps named colors.
+- FSM state preserves the image palette across edits and shuffle.
+
+Theme Maker 3.4.0
+=================
+
+- Android: added missing base window, input-field and section background keys. The
+  exporter now explicitly maps windowBackgroundWhite, windowBackgroundGray,
+  dialogInputField and graySection instead of letting them fall through to text colors.
+- Android key list expanded from 470 to 476 unique color slots.
+- Preset themes preserve their manually defined primary and muted text colors.
+- Automatic text contrast now uses WCAG relative luminance on sRGB colors and
+  evaluates bubble opacity against the theme background.
+- FSM navigation now clears stale text-entry states when the user selects another
+  field, opacity, a preset, help, catalog, export or back navigation.
+- iOS: YAML color scalars are quoted strings, preventing all-digit hex colors from
+  being parsed as integers; the configured muted color is respected.
+- macOS: added a dedicated native .palette key/value exporter with metadata and
+  mappings for bubbles, message text, links, selection, replies, files, waveforms,
+  chat dates, avatars and reveal actions. It no longer reuses iOS YAML.
+- Launcher: validates an existing virtual environment's Python version and no
+  longer upgrades pip on every startup.
+- Image URL downloads now validate resolved public IPs at connection time to guard
+  against DNS rebinding; oversized/decompression-bomb images return a handled error.
+- Removed a duplicate preview render that ran twice for every palette update.
+
+Validation performed for this build:
+- Python syntax compilation.
+- PNG/JPEG preview rendering.
+- Windows .tdesktop-theme ZIP structure and embedded wallpaper.
+- Android .attheme key/value output, surface key presence and WPS wallpaper marker.
+- iOS YAML parsing and string types for color values.
+- macOS .palette metadata and native key/value syntax.
+- Telegram X output and palette-preservation regression checks.
+
+Client versions may support different subsets of theme keys. Import and inspect each
+export in its target Telegram client before relying on it as a final appearance.
+
+Theme Maker 3.3.0
+=================
+
+- Android: map older and newer blue/green interactive slots to the selected accent instead of Telegram's built-in default hues.
+- Android: added aliases for message text, selection backgrounds, mini-app buttons, inline buttons, chat previews, story/profile actions and additional status icons.
+- Android: expanded fallback rules for link, command, quote, reply, active-control and selection families; unknown platform-specific additions remain handled conservatively.
+- Windows: selected links, file names, ticks, call arrows, voice waveforms, service/reply text and peer names now use contrast-correct foregrounds on selected message surfaces.
+- Windows: mention, reaction and poll icons in the chat list use the selected accent.
+- Windows: sidebar icon states remain accent-colored.
+
+Known client limitation
+-----------------------
+Telegram Desktop's current published palette has a color slot for the reaction icon in the chat list, but no separate exposed theme slot for the numeric count inside an in-message reaction pill. The generator does not add invented keys that the client would ignore.
+
+Theme Maker 3.1.0
+=================
+
+- Android exporter now emits the full bundled Telegram Android theme-key set, based on Telegram's shipped arctic.attheme plus compatibility keys from established Android theme files.
+- Added explicit mappings for chats_tabUnreadActiveBackground, chats_secretIcon, chats_secretName, chats_draft, chats_actionMessage, chats_sentCheck/Clock, verified states, archive items, chat links, quotes, voice/media controls, file icons, profile/story actions and mini-app/bot buttons.
+- All Android icon/action/link/green-blue accent slots are remapped to the user's accent color.
+- Added editable main UI text and message text colors. Automatic black/white selection remains the default, but manual text choices are no longer overwritten at export.
+- Windows selected-message text now uses a contrasting foreground on accent selection overlays; supported reaction icon and quote/reply accents are mapped.
+- iOS message primary text uses the editable message text color.
+- No Python downloader/installer added to Start.bat.
+
+Compatibility note
+------------------
+Telegram ignores unknown theme keys, and its color-key set changes between client versions. This version maps the bundled upstream key set and common compatibility aliases, but an actual Android apply-test is still required to catch device/client-specific keys.
+
+TELEGRAM THEME MAKER — ИЗМЕНЕНИЯ 3.0.0
+======================================
+
+- Визуальный предпросмотр интерфейса Telegram вместо выдачи списка HEX-кодов.
+- Предпросмотр обновляется после изменения любого цвета или прозрачности.
+- Цветные обозначения в кнопках быстрой палитры и понятные подписи параметров.
+- Русские/английские названия цветов, HEX с # и без #, трёхзначный HEX и RGB.
+- Автоматический белый/чёрный цвет текста в зависимости от светлоты основного фона.
+- Раздельная прозрачность исходящих и входящих сообщений.
+- Расширена палитра Telegram Desktop: sideBar, filterInputBorderFg,
+  stickerPanPremium1/2, аватары, выделение, ссылки, галочки, файлы, голосовые,
+  просмотрщик медиа, «Открыть с помощью» и связанные состояния.
+- Цвет активных элементов и файлов привязан к пользовательскому акценту вместо стандартного зелёного/синего.
+- Экспортные варианты: Windows .tdesktop-theme, Android .attheme,
+  iOS .tgios-theme, macOS .palette, Telegram X .tgx-theme,
+  Telegram Desktop Editor .tdesktop-palette.
+- Отдельные JSON и PNG как файлы экспорта не отправляются. Картинка предпросмотра
+  остаётся обычным сообщением бота, чтобы показать результат настройки.
+- Добавлена команда сброса цветов с сохранением изображения и названия темы.
+- Сохранён Start.bat без загрузки и установки Python.
+
+Тесты сборки:
+- Python syntax compilation.
+- Создание JPEG-предпросмотра.
+- Проверка содержимого Windows .tdesktop-theme ZIP-контейнера.
+- Проверка WPS-маркера в Android .attheme.
+- Разбор iOS .tgios-theme как YAML.
+- Проверка .tdesktop-palette, .tgx-theme и распознавания названий цветов.
+
+Ограничения:
+- Форматы и отдельные цветовые ключи зависят от версии клиента Telegram.
+- Локальные фото-обои не встраиваются в .tgios-theme, .palette и .tgx-theme
+  этим генератором. Для Windows Desktop и Android фото встраивается в файл.
+- .tdesktop-palette предназначен для импорта через редактор тем, а не для
+  прямого применения как .tdesktop-theme.
+
+
+3.2.0
+------
+- Android: expanded semantic mapping for the full bundled Telegram arctic.attheme key set and common legacy/community keys.
+- Android: chat-list previews, drafts, commands, links, quote/reply markers, verified badges, unread tabs, online indicators, file/media/voice controls, profile actions and mini-app buttons are mapped to the accent.
+- Android: main UI text and message text use separate editable colors; inactive tabs and folder/menu labels use the main text color.
+- Android: placeholder avatars and saved/archive avatar backgrounds use the accent; foreground glyphs use a contrast-safe color.
+- Android: corrected wallpaper metadata handling and added optional WPE terminator after WPS wallpaper data.
+- Windows: message-selection backgrounds now use a visible accent blend with contrast-calculated selected text; actual supported reaction icon and reply composer colors are mapped.
+- Windows: sidebar icons remain accent-colored in all states.
+- iOS/macOS exports now share the updated main/message text and accent mapping; macOS export no longer uses Windows Desktop palette syntax.
