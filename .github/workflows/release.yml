@@ -2,8 +2,10 @@ name: Build Windows release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+    paths:
+      - VERSION.txt
 
 permissions:
   contents: write
@@ -15,16 +17,31 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Validate version and check for duplicate release
+        id: version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '\r\n' < VERSION.txt)"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION.txt must contain a version in X.Y.Z format."
+            exit 1
+          fi
+          TAG="v$VERSION"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "A release for $TAG already exists. Bump VERSION.txt before publishing another build."
+            exit 1
+          fi
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Build ZIP and SHA-256
         shell: bash
         run: |
           set -euo pipefail
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          FILE_VERSION="$(tr -d '\r\n' < VERSION.txt)"
-          if [[ "$TAG_VERSION" != "$FILE_VERSION" ]]; then
-            echo "Tag version ($TAG_VERSION) does not match VERSION.txt ($FILE_VERSION)."
-            exit 1
-          fi
+          VERSION="${{ steps.version.outputs.value }}"
           mkdir -p dist/TelegramThemeMaker
           rsync -a ./ dist/TelegramThemeMaker/ \
             --exclude='.git/' \
@@ -42,16 +59,18 @@ jobs:
             --exclude='*.pyc' \
             --exclude='*.log'
           cd dist
-          zip -qr "../TelegramThemeMaker_v${TAG_VERSION}_Windows.zip" TelegramThemeMaker
+          zip -qr "../TelegramThemeMaker_v${VERSION}_Windows.zip" TelegramThemeMaker
           cd ..
-          sha256sum "TelegramThemeMaker_v${TAG_VERSION}_Windows.zip" > "TelegramThemeMaker_v${TAG_VERSION}_Windows.zip.sha256"
+          sha256sum "TelegramThemeMaker_v${VERSION}_Windows.zip" > "TelegramThemeMaker_v${VERSION}_Windows.zip.sha256"
 
-      - name: Publish release assets
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          name: Telegram Theme Maker ${{ github.ref_name }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Telegram Theme Maker ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            TelegramThemeMaker_${{ github.ref_name }}_Windows.zip
-            TelegramThemeMaker_${{ github.ref_name }}_Windows.zip.sha256
+            TelegramThemeMaker_v${{ steps.version.outputs.value }}_Windows.zip
+            TelegramThemeMaker_v${{ steps.version.outputs.value }}_Windows.zip.sha256
