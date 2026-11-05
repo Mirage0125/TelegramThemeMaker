@@ -52,5 +52,5 @@ jobs:
           name: Telegram Theme Maker v${{ github.ref_name }}
           generate_release_notes: true
           files: |
-            TelegramThemeMaker_v${{ github.ref_name }}_Windows.zip
-            TelegramThemeMaker_v${{ github.ref_name }}_Windows.zip.sha256
+            TelegramThemeMaker_${{ github.ref_name }}_Windows.zip
+            TelegramThemeMaker_${{ github.ref_name }}_Windows.zip.sha256
