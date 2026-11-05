@@ -37,6 +37,9 @@ jobs:
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Validate Python syntax
+        run: python -m compileall -q .
+
       - name: Build ZIP and SHA-256
         shell: bash
         run: |
