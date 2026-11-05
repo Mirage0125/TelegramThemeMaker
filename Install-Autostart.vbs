@@ -24,11 +24,20 @@ shortcut.WorkingDirectory = projectDir
 shortcut.Description = "Запуск Telegram Theme Maker после входа в Windows"
 shortcut.Save
 
+If Not fso.FileExists(shortcutPath) Then
+    MsgBox "Не удалось создать ярлык в папке автозагрузки Windows." & vbCrLf & _
+           "Проверь права записи в папку автозагрузки и повтори запуск.", _
+           vbCritical, "Theme Maker — автозапуск"
+    WScript.Quit 2
+End If
+
 ' Start it now as well, so the user does not need to restart Windows to test it.
 shell.Run Chr(34) & projectDir & "\RunHidden.vbs" & Chr(34), 0, False
 
-MsgBox "Автозапуск настроен. Theme Maker запускается в фоне сейчас и будет запускаться после входа в Windows." & vbCrLf & vbCrLf & _
+MsgBox "Ярлык автозапуска создан и проверен." & vbCrLf & _
+       "Theme Maker запускается в фоне сейчас и будет запускаться после входа в Windows." & vbCrLf & vbCrLf & _
        "Окна CMD не будет." & vbCrLf & _
-       "Лог запуска и ошибок: папка logs\bot.log внутри проекта." & vbCrLf & vbCrLf & _
+       "Журнал автозапуска: logs\autostart.log" & vbCrLf & _
+       "Журнал бота и ошибок: logs\bot.log" & vbCrLf & vbCrLf & _
        "Остановить бота: Stop-Bot.vbs. Отключить автозапуск: Remove-Autostart.vbs.", _
        vbInformation, "Theme Maker — автозапуск"
