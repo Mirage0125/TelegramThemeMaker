@@ -2134,9 +2134,14 @@ async def main():
         print(f"Ошибка запуска: {exc}")
         raise SystemExit(1) from exc
     bot = Bot(TOKEN)
-    await set_user_commands(bot)
+    try:
+        await set_user_commands(bot)
+        print("Команды бота зарегистрированы в меню Telegram.")
+    except Exception as exc:
+        # Registration requires an internet connection, but a temporary
+        # connection delay at Windows sign-in must not stop polling.
+        print(f"Не удалось обновить список команд при запуске (не критично): {exc}")
     print(f"Theme Maker {APP_VERSION} запущен. Для остановки нажми Ctrl+C.")
-    print("Команды бота зарегистрированы в меню Telegram.")
     await dp.start_polling(bot)
 
 
