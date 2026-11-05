@@ -82,7 +82,7 @@ if not exist ".env" (
 )
 
 echo [3/3] Starting bot...
-".venv\Scripts\python.exe" bot.py
+".venv\Scripts\python.exe" BackgroundRunner.py
 echo.
 echo Bot stopped. If there is an error above, take a screenshot.
 pause
