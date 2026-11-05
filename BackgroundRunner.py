@@ -7,8 +7,6 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from UpdateManager import apply_update_if_available
-
 ROOT = Path(__file__).resolve().parent
 LOG_DIR = ROOT / "logs"
 LOG_FILE = LOG_DIR / "bot.log"
@@ -35,7 +33,19 @@ def main() -> int:
         sys.stderr = log
         print(f"\n[{timestamp()}] Запуск фонового процесса Theme Maker")
         try:
-            apply_update_if_available(ROOT, lambda message: print(f"[{timestamp()}] {message}"))
+            # Updating is best-effort: a temporary GitHub/network failure must
+            # never prevent the already installed bot from starting.
+            try:
+                from UpdateManager import apply_update_if_available
+
+                apply_update_if_available(ROOT, lambda message: print(f"[{timestamp()}] {message}"))
+            except Exception as exc:
+                print(
+                    f"[{timestamp()}] Не удалось проверить или установить обновление; "
+                    f"запускаю текущую версию: {exc}"
+                )
+                traceback.print_exc()
+
             runpy.run_path(str(ROOT / "bot.py"), run_name="__main__")
             print(f"[{timestamp()}] Процесс бота завершился.")
             return 0
