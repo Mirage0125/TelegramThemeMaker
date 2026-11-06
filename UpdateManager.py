@@ -36,6 +36,8 @@ PRESERVED_ROOT_ITEMS = {
     "user_data",
     ".bot.lock",
     ".update-state.json",
+    # User-owned images and other local assets must never be replaced by auto-updates.
+    "assets",
     "__pycache__",
 }
 REQUIRED_FILES = {"bot.py", "BackgroundRunner.py", "UpdateManager.py", "VERSION.txt", "requirements.txt"}
