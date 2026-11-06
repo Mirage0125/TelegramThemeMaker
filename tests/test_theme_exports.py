@@ -203,9 +203,9 @@ class ThemeExportTests(unittest.TestCase):
 
         result, edits = asyncio.run(exercise())
         self.assertEqual(result, b"photo-bytes")
-        self.assertIn("Loading: 9%", "\\n".join(edits))
-        self.assertIn("Loading: 27%", "\\n".join(edits))
-        self.assertIn("Loading: 30%", "\\n".join(edits))
+        self.assertTrue(any("Loading: 9%" in item for item in edits))
+        self.assertTrue(any("Loading: 27%" in item for item in edits))
+        self.assertTrue(any("Loading: 30%" in item for item in edits))
 
 
     def test_photo_preparation_progress_is_relayed_from_worker(self):
@@ -238,10 +238,9 @@ class ThemeExportTests(unittest.TestCase):
             palette, wallpaper, edits = asyncio.run(exercise(directory))
             self.assertTrue(palette)
             self.assertTrue(wallpaper.is_file())
-            joined = "\\n".join(edits)
-            self.assertIn("42%", joined)
-            self.assertIn("64%", joined)
-            self.assertIn("76%", joined)
+            self.assertTrue(any("42%" in item for item in edits))
+            self.assertTrue(any("64%" in item for item in edits))
+            self.assertTrue(any("76%" in item for item in edits))
 
 
 if __name__ == "__main__":
