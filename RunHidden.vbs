@@ -1,5 +1,6 @@
 Option Explicit
 Dim shell, fso, projectDir, pythonw, runner, command, logDir, logPath
+Dim service, processes, process, found
 
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
@@ -42,6 +43,36 @@ If Err.Number <> 0 Then
     Err.Clear
 Else
     WriteLog "Background process launch command was sent."
+End If
+On Error GoTo 0
+
+' Confirm that Windows can see the process instead of treating shell.Run as proof.
+WScript.Sleep 2000
+On Error Resume Next
+Set service = GetObject("winmgmts:\\.\root\cimv2")
+If Err.Number <> 0 Then
+    WriteLog "WARNING: WMI process check is unavailable: " & Err.Description
+    Err.Clear
+Else
+    Set processes = service.ExecQuery("SELECT * FROM Win32_Process WHERE Name='pythonw.exe'")
+    If Err.Number <> 0 Then
+        WriteLog "WARNING: Could not query pythonw.exe processes: " & Err.Description
+        Err.Clear
+    Else
+        found = False
+        For Each process In processes
+            If Not IsNull(process.CommandLine) Then
+                If InStr(1, LCase(CStr(process.CommandLine)), LCase(runner), vbTextCompare) > 0 Then
+                    found = True
+                End If
+            End If
+        Next
+        If found Then
+            WriteLog "Confirmed: Theme Maker background process is running."
+        Else
+            WriteLog "WARNING: Theme Maker process was not visible after launch. Check logs\bot.log."
+        End If
+    End If
 End If
 On Error GoTo 0
 
