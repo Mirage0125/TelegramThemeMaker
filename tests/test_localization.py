@@ -35,7 +35,7 @@ class LanguagePreferencesTests(unittest.TestCase):
     def test_translation_and_commands_are_available(self):
         self.assertEqual(text("en", "menu_photo"), "🖼 Create from a photo")
         self.assertIn("start", text("en", "commands"))
-        self.assertIn("создадим", text("ru", "welcome").lower())
+        self.assertIn("соберём", text("ru", "welcome").lower())
 
 
 if __name__ == "__main__":
