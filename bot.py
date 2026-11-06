@@ -1760,10 +1760,11 @@ async def retry_telegram_operation(operation, operation_name: str):
             if attempt >= TELEGRAM_REQUEST_ATTEMPTS:
                 raise
             delay = TELEGRAM_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            # Keep console logging ASCII-only: Windows may use a legacy code page.
             print(
-                f"Временная ошибка Telegram при {operation_name} "
-                f"(попытка {attempt}/{TELEGRAM_REQUEST_ATTEMPTS}): {exc}. "
-                f"Повтор через {delay:g} сек."
+                f"Temporary Telegram error during {operation_name} "
+                f"(attempt {attempt}/{TELEGRAM_REQUEST_ATTEMPTS}); "
+                f"retrying in {delay:g}s."
             )
             await asyncio.sleep(delay)
 
@@ -1786,7 +1787,7 @@ async def download_telegram_image(message: Message, bot: Bot, progress_callback=
             file_id,
             request_timeout=TELEGRAM_GET_FILE_TIMEOUT,
         ),
-        "получении сведений о файле",
+        "file metadata lookup",
     )
 
     if file_obj.file_size and file_obj.file_size > MAX_IMAGE_BYTES:
@@ -1802,7 +1803,7 @@ async def download_telegram_image(message: Message, bot: Bot, progress_callback=
         )
         return buffer.getvalue()
 
-    return await retry_telegram_operation(download_once, "скачивании фотографии")
+    return await retry_telegram_operation(download_once, "photo file download")
 
 
 async def show_theme(
