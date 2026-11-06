@@ -40,7 +40,7 @@ PRESERVED_ROOT_ITEMS = {
     "assets",
     "__pycache__",
 }
-REQUIRED_FILES = {"bot.py", "BackgroundRunner.py", "UpdateManager.py", "SQLiteStorage.py", "VERSION.txt", "requirements.txt"}
+REQUIRED_FILES = {"bot.py", "BackgroundRunner.py", "UpdateManager.py", "SQLiteStorage.py", "VERSION.txt", "requirements.txt", "defaults/welcome.png"}
 VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 
 
