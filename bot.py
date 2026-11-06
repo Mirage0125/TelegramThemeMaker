@@ -1596,6 +1596,11 @@ async def show_theme(
     )
 
 
+def welcome_cover_path() -> Path:
+    """Prefer the user's local cover and fall back to the bundled default."""
+    return COVER_PATH if COVER_PATH.is_file() else DEFAULT_COVER_PATH
+
+
 async def send_welcome(message: Message):
     text = (
         "<b>Theme Maker</b>\n"
@@ -1605,7 +1610,7 @@ async def send_welcome(message: Message):
         "Выбери, с чего начнём:"
     )
     # Preserve a user's customized local cover; fall back to the bundled default.
-    cover_path = COVER_PATH if COVER_PATH.is_file() else DEFAULT_COVER_PATH
+    cover_path = welcome_cover_path()
     if cover_path.is_file():
         await message.answer_photo(
             BufferedInputFile(cover_path.read_bytes(), filename="theme-maker-welcome.png"),
