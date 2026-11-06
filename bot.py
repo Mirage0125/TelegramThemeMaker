@@ -53,7 +53,6 @@ TELEGRAM_DOWNLOAD_TIMEOUT = 180
 TELEGRAM_REQUEST_ATTEMPTS = 3
 TELEGRAM_RETRY_BASE_DELAY = 1.0
 MAX_IMAGE_SIDE = 1920
-PALETTE_IMAGE_SIDE = 320
 Image.MAX_IMAGE_PIXELS = 25_000_000
 
 
@@ -402,34 +401,25 @@ def contrast_color(background: str) -> str:
     return auto_text_color(background)
 
 
-def _save_user_wallpaper_image(user_id: int, image: Image.Image) -> Path:
+def save_user_wallpaper(user_id: int, raw: bytes) -> Path:
     user_dir = USER_DATA / str(user_id)
     user_dir.mkdir(parents=True, exist_ok=True)
     # Each theme gets its own file: a later upload must not mutate an older active theme.
     dest = user_dir / f"wallpaper_{uuid.uuid4().hex[:12]}.jpg"
-    image.save(dest, "JPEG", quality=87)
+    with Image.open(io.BytesIO(raw)) as image:
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.LANCZOS)
+        image.save(dest, "JPEG", quality=91, optimize=True, progressive=True)
     return dest
 
 
-def save_user_wallpaper(user_id: int, raw: bytes) -> Path:
-    with Image.open(io.BytesIO(raw)) as source:
-        image = ImageOps.exif_transpose(source).convert("RGB")
-        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.BICUBIC)
-        return _save_user_wallpaper_image(user_id, image)
-
-
-def _extract_palette_from_image(image: Image.Image) -> list[str]:
-    # A 320 px sample is enough for a small theme palette and is much cheaper to quantize.
-    sample = image.copy()
-    sample.thumbnail((PALETTE_IMAGE_SIDE, PALETTE_IMAGE_SIDE), Image.Resampling.BILINEAR)
-    quantized = sample.quantize(
-        colors=8,
-        method=Image.Quantize.FASTOCTREE,
-    ).convert("RGB")
-    colors = sorted(
-        quantized.getcolors(PALETTE_IMAGE_SIDE * PALETTE_IMAGE_SIDE) or [],
-        reverse=True,
-    )
+def extract_palette(raw: bytes):
+    """Use the original 500x500 Lanczos + MEDIANCUT palette extraction."""
+    with Image.open(io.BytesIO(raw)) as image:
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        image.thumbnail((500, 500), Image.Resampling.LANCZOS)
+        quantized = image.quantize(colors=8, method=Image.Quantize.MEDIANCUT).convert("RGB")
+        colors = sorted(quantized.getcolors(500 * 500) or [], reverse=True)
     result = []
     for _, rgb in colors:
         value = rgb_hex(rgb)
@@ -440,27 +430,18 @@ def _extract_palette_from_image(image: Image.Image) -> list[str]:
     return result
 
 
-def extract_palette(raw: bytes):
-    with Image.open(io.BytesIO(raw)) as source:
-        image = ImageOps.exif_transpose(source).convert("RGB")
-        return _extract_palette_from_image(image)
-
-
 def prepare_photo_assets(user_id: int, raw: bytes, progress_callback=None) -> tuple[list[str], Path]:
-    """Decode an uploaded image once, then make both the palette and wallpaper from it."""
-    with Image.open(io.BytesIO(raw)) as source:
-        image = ImageOps.exif_transpose(source).convert("RGB")
-        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.BICUBIC)
-        if progress_callback:
-            progress_callback(42, "photo_stage_analyzing")
+    """Keep the legacy palette extraction and wallpaper preparation as separate passes."""
+    if progress_callback:
+        progress_callback(42, "photo_stage_analyzing")
 
-        palette = _extract_palette_from_image(image)
-        if progress_callback:
-            progress_callback(64, "photo_stage_palette")
+    palette = extract_palette(raw)
+    if progress_callback:
+        progress_callback(64, "photo_stage_palette")
 
-        wallpaper = _save_user_wallpaper_image(user_id, image)
-        if progress_callback:
-            progress_callback(76, "photo_stage_saving")
+    wallpaper = save_user_wallpaper(user_id, raw)
+    if progress_callback:
+        progress_callback(76, "photo_stage_saving")
 
     return palette, wallpaper
 
@@ -683,7 +664,7 @@ def render_preview(theme: dict, wallpaper_path: str | None = None, image_palette
 
     out = io.BytesIO()
     # Skipping the slow Huffman optimisation noticeably reduces preview encoding time.
-    canvas.convert("RGB").save(out, format="JPEG", quality=85)
+    canvas.convert("RGB").save(out, format="JPEG", quality=88, optimize=True)
     return out.getvalue()
 
 

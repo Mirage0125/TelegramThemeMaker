@@ -1,3 +1,11 @@
+TELEGRAM THEME MAKER 3.9.4
+==========================
+- Restored the original photo colour-recognition pipeline: 500x500 Lanczos sampling and MEDIANCUT quantization.
+- Restored the original wallpaper preparation quality/settings and preview JPEG encoding.
+- Fixed the Windows installation diagnostic's Python syntax check by passing its script safely as Base64.
+- Diagnostic tests now recognise that development tests are intentionally omitted from release ZIPs, and distinguish visible console runs from hidden background runs.
+- Excluded development-only tests from the Windows release archive.
+
 TELEGRAM THEME MAKER 3.9.3
 ==========================
 - Added automatic retries for temporary Telegram Gateway Timeout, server and HTTP-client network failures during photo metadata lookup and download.

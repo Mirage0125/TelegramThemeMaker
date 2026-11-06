@@ -165,9 +165,13 @@ for path in files:
     ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
 print("Parsed", len(files), "Python files.")
 '@
+    # Pass the multi-line script as Base64 so PowerShell's native argument
+    # parser cannot strip Python set/dict quotes on Windows.
+    $syntaxBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($syntaxCheck))
+    $syntaxRunner = "import base64; exec(base64.b64decode('$syntaxBase64'))"
     Push-Location $Root
     try {
-        $syntaxOutput = & $pythonExe -c $syntaxCheck 2>&1
+        $syntaxOutput = & $pythonExe -c $syntaxRunner 2>&1
         $syntaxExit = $LASTEXITCODE
     } finally {
         Pop-Location
@@ -180,17 +184,22 @@ print("Parsed", len(files), "Python files.")
 }
 
 if ($pythonReady -and $dependenciesReady) {
-    Push-Location $Root
-    try {
-        $testOutput = & $pythonExe -m unittest discover -s tests -v 2>&1
-        $testExit = $LASTEXITCODE
-    } finally {
-        Pop-Location
-    }
-    if ($testExit -eq 0) {
-        Add-Check "Regression tests" "PASS" "All automated tests passed."
+    $testsPath = Join-Path $Root "tests"
+    if (-not (Test-Path -LiteralPath $testsPath -PathType Container)) {
+        Add-Check "Regression tests" "INFO" "Development tests are not bundled in Windows releases; the full suite runs before each release is published."
     } else {
-        Add-Check "Regression tests" "FAIL" ($testOutput -join " ")
+        Push-Location $Root
+        try {
+            $testOutput = & $pythonExe -m unittest discover -s tests -v 2>&1
+            $testExit = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+        if ($testExit -eq 0) {
+            Add-Check "Regression tests" "PASS" "All automated tests passed."
+        } else {
+            Add-Check "Regression tests" "FAIL" ($testOutput -join " ")
+        }
     }
 } else {
     Add-Check "Regression tests" "WARN" "Skipped because Python or required dependencies are unavailable."
@@ -217,12 +226,22 @@ if (Test-Path -LiteralPath $shortcutPath) {
 
 try {
     $runnerPath = (Join-Path $Root "BackgroundRunner.py").ToLowerInvariant()
-    $botProcesses = @(Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" -ErrorAction Stop |
-        Where-Object { $_.CommandLine -and $_.CommandLine.ToLowerInvariant().Contains($runnerPath) })
-    if ($botProcesses.Count -gt 0) {
-        Add-Check "Background process" "PASS" ("Found " + $botProcesses.Count + " Theme Maker process(es).")
+    $botPath = (Join-Path $Root "bot.py").ToLowerInvariant()
+    $matchingProcesses = @(Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" -ErrorAction Stop |
+        Where-Object {
+            $_.CommandLine -and (
+                $_.CommandLine.ToLowerInvariant().Contains($runnerPath) -or
+                $_.CommandLine.ToLowerInvariant().Contains($botPath)
+            )
+        })
+    $hiddenProcesses = @($matchingProcesses | Where-Object { $_.Name -ieq "pythonw.exe" })
+    $visibleProcesses = @($matchingProcesses | Where-Object { $_.Name -ieq "python.exe" })
+    if ($hiddenProcesses.Count -gt 0) {
+        Add-Check "Background process" "PASS" ("Found " + $hiddenProcesses.Count + " hidden Theme Maker process(es).")
+    } elseif ($visibleProcesses.Count -gt 0) {
+        Add-Check "Background process" "INFO" ("The bot is running in " + $visibleProcesses.Count + " visible Python console process(es). Use RunHidden.vbs for background startup.")
     } else {
-        Add-Check "Background process" "WARN" "No hidden Theme Maker process is running. Start.bat may still be running in a visible console."
+        Add-Check "Background process" "WARN" "No Theme Maker bot process is currently running."
     }
 } catch {
     Add-Check "Background process" "WARN" ("Windows did not allow process inspection: " + $_.Exception.Message)
