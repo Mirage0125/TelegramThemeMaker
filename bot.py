@@ -2071,50 +2071,95 @@ async def set_opacity(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "rename")
 async def rename_start(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     await state.set_state(ThemeStates.waiting_name)
-    await callback.message.answer("Напиши название темы. Например: Sakura Evening")
+    await callback.message.answer(tr(language, "rename_prompt"))
     await callback.answer()
 
 
 @dp.message(ThemeStates.waiting_name)
 async def rename_theme(message: Message, state: FSMContext):
+    language = user_language(message.from_user.id)
     name = (message.text or "").strip()
     if not name or len(name) > 48:
-        await message.answer("Название должно содержать от 1 до 48 символов.")
+        await message.answer(tr(language, "name_invalid"))
         return
     data = await state.get_data()
-    theme = data.get("theme", DEFAULT_THEME.copy())
+    theme = data.get("theme", default_theme(language))
     theme["name"] = name
     await state.set_state(None)
     await state.update_data(theme=theme)
-    await show_theme(message, theme, data.get("wallpaper_path"), prefix="Название сохранено.\n\n", image_palette=data.get("image_palette"))
+    await show_theme(
+        message,
+        theme,
+        data.get("wallpaper_path"),
+        prefix=tr(language, "name_saved"),
+        image_palette=data.get("image_palette"),
+    )
+
+
 
 
 @dp.callback_query(F.data == "reset")
 async def reset_theme(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     await state.set_state(None)
     data = await state.get_data()
-    old_theme = data.get("theme", DEFAULT_THEME.copy())
+    old_theme = data.get("theme", default_theme(language))
     original_photo_theme = data.get("photo_theme_original")
     if data.get("image_palette") and original_photo_theme:
         fresh = original_photo_theme.copy()
     else:
-        fresh = DEFAULT_THEME.copy()
-    fresh["name"] = old_theme.get("name", fresh.get("name", "Моя тема"))
-    # "Reset colors" does not silently reset the user's opacity controls.
+        fresh = default_theme(language)
+    fresh["name"] = old_theme.get("name", fresh.get("name", tr(language, "default_theme_name")))
+    # Resetting colours does not silently reset the opacity controls.
     fresh["outgoing_opacity"] = old_theme.get("outgoing_opacity", fresh.get("outgoing_opacity", 100))
     fresh["incoming_opacity"] = old_theme.get("incoming_opacity", fresh.get("incoming_opacity", 100))
     ensure_text_colors(fresh)
     await state.update_data(theme=fresh)
-    await show_theme(callback.message, fresh, data.get("wallpaper_path"), prefix="Цвета возвращены к исходному варианту. Обои, название и прозрачность сохранены.\n\n", image_palette=data.get("image_palette"))
+    await show_theme(
+        callback.message,
+        fresh,
+        data.get("wallpaper_path"),
+        prefix=tr(language, "prefix_reset"),
+        image_palette=data.get("image_palette"),
+    )
     await callback.answer()
 
 
+
+
 async def show_catalog(message: Message):
+    language = user_language(message.from_user.id)
     items = load_catalog()
-    buttons = [[InlineKeyboardButton(text=f"{item['name']} — {item['description']}", callback_data=f"preset:{item['id']}")] for item in items]
-    buttons.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")])
-    await message.answer("Выбери готовую тему:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    catalog_translations = {
+        "midnight": ("Midnight", "Cool dark palette"),
+        "sakura": ("Sakura", "Soft pink shades"),
+        "moss": ("Moss", "Calm green shades"),
+        "lavender": ("Lavender", "Light lilac palette"),
+        "ember": ("Ember", "Warm dark palette"),
+    }
+    buttons = []
+    for item in items:
+        name = item["name"]
+        description = item["description"]
+        if language == "en":
+            name, description = catalog_translations.get(
+                item.get("id"), (name, description)
+            )
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{name} — {description}",
+                callback_data=f"preset:{item['id']}",
+            )
+        ])
+    buttons.append([InlineKeyboardButton(text=tr(language, "home"), callback_data="home")])
+    await message.answer(
+        tr(language, "catalog_prompt"),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
+
+
 
 
 @dp.callback_query(F.data == "catalog")
@@ -2126,13 +2171,23 @@ async def catalog_callback(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("preset:"))
 async def use_preset(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     key = callback.data.split(":", 1)[1]
     preset = next((item for item in load_catalog() if item.get("id") == key), None)
     if not preset:
-        await callback.answer("Тема не найдена", show_alert=True)
+        await callback.answer(tr(language, "catalog_not_found"), show_alert=True)
         return
-    theme = DEFAULT_THEME.copy()
+    theme = default_theme(language)
     theme.update({k: v for k, v in preset.items() if k in theme})
+    if language == "en":
+        preset_names = {
+            "midnight": "Midnight",
+            "sakura": "Sakura",
+            "moss": "Moss",
+            "lavender": "Lavender",
+            "ember": "Ember",
+        }
+        theme["name"] = preset_names.get(key, theme.get("name", "My theme"))
     # Explicit palette values must not be replaced by automatic text generation.
     theme["text_auto"] = "text" not in preset
     theme["message_text_auto"] = "message_text" not in preset
@@ -2140,22 +2195,34 @@ async def use_preset(callback: CallbackQuery, state: FSMContext):
     ensure_text_colors(theme)
     await state.clear()
     await state.update_data(theme=theme, wallpaper_path=None)
-    await show_theme(callback.message, theme, prefix="Готовая тема выбрана.\n\n")
+    await show_theme(callback.message, theme, prefix=tr(language, "prefix_preset"))
     await callback.answer()
+
+
 
 
 @dp.callback_query(F.data == "export_menu")
 async def export_menu(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
-    await callback.message.answer("Выбери приложение, для которого нужен файл темы:", reply_markup=export_keyboard())
+    language = user_language(callback.from_user.id)
+    await callback.message.answer(
+        tr(language, "export_prompt"),
+        reply_markup=export_keyboard(language),
+    )
     await callback.answer()
 
 
 @dp.callback_query(F.data == "export:other")
 async def export_other(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
-    await callback.message.answer("Дополнительные форматы:", reply_markup=other_export_keyboard())
+    language = user_language(callback.from_user.id)
+    await callback.message.answer(
+        tr(language, "export_more"),
+        reply_markup=other_export_keyboard(language),
+    )
     await callback.answer()
+
+
 
 
 @dp.callback_query(F.data == "back_theme")
