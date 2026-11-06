@@ -134,7 +134,7 @@ TEXTS = {
             "Пришли фотографию как фото или файл либо вставь прямую ссылку на изображение. "
             "Я использую её как обои там, где формат темы это поддерживает."
         ),
-        "photo_progress": "<b>Загрузка: {percent}%</b>\\n{stage}",
+        "photo_progress": "<b>Загрузка: {percent}%</b>\n{stage}",
         "photo_progress_error": "Не получилось обработать фото: {error}",
         "photo_stage_downloading": "Получаю изображение…",
         "photo_stage_analyzing": "Проверяю изображение…",
@@ -323,7 +323,7 @@ TEXTS = {
             "Send a photo or image file, or paste a direct image link. "
             "I'll use it as chat wallpaper in the theme formats that support it."
         ),
-        "photo_progress": "<b>Loading: {percent}%</b>\\n{stage}",
+        "photo_progress": "<b>Loading: {percent}%</b>\n{stage}",
         "photo_progress_error": "Couldn't process the photo: {error}",
         "photo_stage_downloading": "Receiving the image…",
         "photo_stage_analyzing": "Checking the image…",
