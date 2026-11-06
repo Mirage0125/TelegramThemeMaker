@@ -1879,6 +1879,7 @@ async def choose_field(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("csethex:"))
 async def set_extracted_color(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     try:
         _, field, raw_color = callback.data.split(":", 2)
         color = parse_color(raw_color)
@@ -1887,9 +1888,9 @@ async def set_extracted_color(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     palette = data.get("image_palette") or []
     if field not in FIELD_LABELS or not color or color not in palette:
-        await callback.answer("Этот цвет не найден в палитре фотографии", show_alert=True)
+        await callback.answer(tr(language, "color_not_found"), show_alert=True)
         return
-    theme = data.get("theme", DEFAULT_THEME.copy())
+    theme = data.get("theme", default_theme(language))
     theme[field] = color
     if field == "text":
         theme["text_auto"] = False
@@ -1902,62 +1903,71 @@ async def set_extracted_color(callback: CallbackQuery, state: FSMContext):
         callback.message,
         theme,
         data.get("wallpaper_path"),
-        prefix=f"Для параметра «{FIELD_LABELS[field]}» выбран цвет {color}.\n\n",
+        prefix=tr(language, "prefix_color_selected", field=field_label(language, field), color=color),
         image_palette=palette,
     )
-    await callback.answer("Цвет из фотографии применён")
+    await callback.answer(tr(language, "photo_color_applied"))
 
 
 @dp.callback_query(F.data == "shuffle_palette")
 async def shuffle_photo_palette(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     data = await state.get_data()
     palette = data.get("image_palette") or []
     if not palette:
-        await callback.answer("Сначала создай тему из фотографии", show_alert=True)
+        await callback.answer(tr(language, "need_photo_first"), show_alert=True)
         return
-    current_theme = data.get("theme", DEFAULT_THEME.copy())
+    current_theme = data.get("theme", default_theme(language))
     theme = create_photo_theme(palette, previous_theme=current_theme)
+    theme["name"] = current_theme.get("name", tr(language, "default_theme_name"))
     await state.set_state(None)
     await state.update_data(theme=theme)
     await show_theme(
         callback.message,
         theme,
         data.get("wallpaper_path"),
-        prefix="Получилось новое сочетание из цветов той же фотографии.\n\n",
+        prefix=tr(language, "prefix_palette_shuffled"),
         image_palette=palette,
     )
-    await callback.answer("Цвета перемешаны")
+    await callback.answer(tr(language, "colors_shuffled"))
+
+
 
 
 @dp.callback_query(F.data.startswith("custom:"))
 async def custom_color_start(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     field = callback.data.split(":", 1)[1]
     if field not in FIELD_LABELS:
-        await callback.answer("Неизвестный параметр", show_alert=True)
+        await callback.answer(tr(language, "field_unknown"), show_alert=True)
         return
     data = await state.get_data()
     await state.update_data(editing_field=field)
     await state.set_state(ThemeStates.waiting_color)
+    label = field_label(language, field)
     if data.get("image_palette"):
-        prompt = f"Введи свой HEX-цвет для «{FIELD_LABELS[field]}», например <code>#FF88AA</code> или <code>FF88AA</code>."
+        prompt = tr(language, "enter_hex_photo", field=html.escape(label))
     else:
-        prompt = f"Введи цвет для «{FIELD_LABELS[field]}». Можно написать <b>black</b>, <b>белый</b>, <b>red</b>, <b>серый</b>, <b>#FF88AA</b> или <b>FF88AA</b> без решётки."
+        prompt = tr(language, "enter_color", field=html.escape(label))
     await callback.message.answer(prompt, parse_mode=ParseMode.HTML)
     await callback.answer()
 
 
+
+
 @dp.callback_query(F.data.startswith("cset:"))
 async def set_named_color(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     try:
         _, field, color_name = callback.data.split(":", 2)
     except ValueError:
-        await callback.answer("Не удалось прочитать цвет", show_alert=True)
+        await callback.answer(tr(language, "color_read_error"), show_alert=True)
         return
     if field not in FIELD_LABELS or color_name not in NAMED_COLORS:
-        await callback.answer("Неизвестный цвет", show_alert=True)
+        await callback.answer(tr(language, "color_unknown"), show_alert=True)
         return
     data = await state.get_data()
-    theme = data.get("theme", DEFAULT_THEME.copy())
+    theme = data.get("theme", default_theme(language))
     theme[field] = NAMED_COLORS[color_name]
     await state.set_state(None)
     if field == "text":
@@ -1966,26 +1976,32 @@ async def set_named_color(callback: CallbackQuery, state: FSMContext):
         theme["message_text_auto"] = False
     ensure_text_colors(theme)
     await state.update_data(theme=theme)
-    await show_theme(callback.message, theme, data.get("wallpaper_path"), prefix=f"{FIELD_LABELS[field]} изменён.\n\n", image_palette=data.get("image_palette"))
+    await show_theme(
+        callback.message,
+        theme,
+        data.get("wallpaper_path"),
+        prefix=tr(language, "prefix_field_changed", field=field_label(language, field)),
+        image_palette=data.get("image_palette"),
+    )
     await callback.answer()
+
+
 
 
 @dp.message(ThemeStates.waiting_color)
 async def set_color(message: Message, state: FSMContext):
+    language = user_language(message.from_user.id)
     data = await state.get_data()
     color = parse_color(message.text or "")
     if not color:
-        if data.get("image_palette"):
-            error_text = "Не распознал HEX. Введи шестизначный код, например <code>#FF88AA</code> или <code>FF88AA</code>."
-        else:
-            error_text = "Не распознал цвет. Напиши название (например, <b>black</b>, <b>white</b>, <b>gray</b>, <b>red</b>) или шестизначный код вроде <code>FF88AA</code> без #."
-        await message.answer(error_text, parse_mode=ParseMode.HTML)
+        error_key = "hex_invalid" if data.get("image_palette") else "color_invalid"
+        await message.answer(tr(language, error_key), parse_mode=ParseMode.HTML)
         return
-    theme = data.get("theme", DEFAULT_THEME.copy())
+    theme = data.get("theme", default_theme(language))
     field = data.get("editing_field")
     if field not in FIELD_LABELS:
         await state.set_state(None)
-        await message.answer("Не выбран параметр. Открой конструктор заново.", reply_markup=main_menu())
+        await message.answer(tr(language, "field_not_selected"), reply_markup=main_menu(language))
         return
     theme[field] = color
     if field == "text":
@@ -1995,40 +2011,62 @@ async def set_color(message: Message, state: FSMContext):
     ensure_text_colors(theme)
     await state.set_state(None)
     await state.update_data(theme=theme)
-    await show_theme(message, theme, data.get("wallpaper_path"), prefix=f"{FIELD_LABELS[field]} изменён.\n\n", image_palette=data.get("image_palette"))
+    await show_theme(
+        message,
+        theme,
+        data.get("wallpaper_path"),
+        prefix=tr(language, "prefix_field_changed", field=field_label(language, field)),
+        image_palette=data.get("image_palette"),
+    )
+
+
 
 
 @dp.callback_query(F.data.startswith("opacity:"))
 async def choose_opacity(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
+    language = user_language(callback.from_user.id)
     field = callback.data.split(":", 1)[1]
     if field not in ("outgoing", "incoming"):
-        await callback.answer("Неизвестный параметр", show_alert=True)
+        await callback.answer(tr(language, "field_unknown"), show_alert=True)
         return
-    label = "моих сообщений" if field == "outgoing" else "входящих сообщений"
-    await callback.message.answer(f"Выбери прозрачность {label}. 100% — полностью непрозрачные, 50% — заметно просвечивают обои.", reply_markup=opacity_keyboard(field))
+    label_key = "opacity_label_outgoing" if field == "outgoing" else "opacity_label_incoming"
+    prompt = tr(language, "opacity_prompt_outgoing" if field == "outgoing" else "opacity_prompt_incoming")
+    prompt += " " + tr(language, "opacity_explainer")
+    await callback.message.answer(prompt, reply_markup=opacity_keyboard(language, field))
     await callback.answer()
+
+
 
 
 @dp.callback_query(F.data.startswith("opset:"))
 async def set_opacity(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     try:
         _, field, value = callback.data.split(":", 2)
         opacity = int(value)
     except (ValueError, TypeError):
-        await callback.answer("Некорректная прозрачность", show_alert=True)
+        await callback.answer(tr(language, "opacity_invalid"), show_alert=True)
         return
     if field not in ("outgoing", "incoming") or opacity not in (20, 30, 40, 50, 60, 70, 80, 90, 100):
-        await callback.answer("Некорректная прозрачность", show_alert=True)
+        await callback.answer(tr(language, "opacity_invalid"), show_alert=True)
         return
     data = await state.get_data()
-    theme = data.get("theme", DEFAULT_THEME.copy())
+    theme = data.get("theme", default_theme(language))
     theme[f"{field}_opacity"] = opacity
     ensure_text_colors(theme)
     await state.set_state(None)
     await state.update_data(theme=theme)
-    await show_theme(callback.message, theme, data.get("wallpaper_path"), prefix="Прозрачность обновлена.\n\n", image_palette=data.get("image_palette"))
+    await show_theme(
+        callback.message,
+        theme,
+        data.get("wallpaper_path"),
+        prefix=tr(language, "prefix_opacity"),
+        image_palette=data.get("image_palette"),
+    )
     await callback.answer()
+
+
 
 
 @dp.callback_query(F.data == "rename")
