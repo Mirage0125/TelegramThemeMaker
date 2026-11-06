@@ -19,7 +19,7 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import (
     BufferedInputFile,
     BotCommand,
@@ -31,11 +31,13 @@ from aiogram.types import (
 from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 from dotenv import load_dotenv
 
+from SQLiteStorage import SQLiteStorage
+
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 CATALOG_PATH = ROOT / "themes" / "catalog.json"
-USER_DATA = ROOT / "user_data"
+USER_DATA = Path(os.getenv("THEME_MAKER_USER_DATA_DIR", str(ROOT / "user_data"))).expanduser()
 COVER_PATH = ROOT / "assets" / "welcome.png"
 VERSION_PATH = ROOT / "VERSION.txt"
 try:
@@ -49,7 +51,10 @@ Image.MAX_IMAGE_PIXELS = 25_000_000
 if not TOKEN or TOKEN == "PASTE_YOUR_BOT_TOKEN_HERE":
     raise SystemExit("Не найден токен. Открой .env, вставь токен от @BotFather и перезапусти Start.bat.")
 
-dp = Dispatcher(storage=MemoryStorage())
+dp = Dispatcher(
+    storage=SQLiteStorage(USER_DATA / "fsm.sqlite3"),
+    events_isolation=SimpleEventIsolation(),
+)
 
 DEFAULT_THEME = {
     "name": "Моя тема",
@@ -2107,6 +2112,10 @@ INSTANCE_LOCK_HANDLE = None
 def acquire_instance_lock():
     """Prevent two local copies from polling the same bot token at once."""
     global INSTANCE_LOCK_HANDLE
+    # BackgroundRunner acquires this lock before running the updater. Direct
+    # launches of bot.py still acquire it here.
+    if os.environ.get("THEME_MAKER_RUNNER_LOCK_HELD") == "1":
+        return
     lock_path = ROOT / ".bot.lock"
     handle = open(lock_path, "a+b")
     handle.seek(0, os.SEEK_END)
