@@ -93,7 +93,7 @@ if (Test-Path -LiteralPath $envPath) {
     $envText = Get-Content -LiteralPath $envPath -Raw
     $tokenMatch = [regex]::Match($envText, '(?m)^\s*BOT_TOKEN\s*=\s*(.*?)\s*$')
     if ($tokenMatch.Success) {
-        $tokenValue = $tokenMatch.Groups[1].Value.Trim().Trim('"').Trim("'")
+        $tokenValue = $tokenMatch.Groups[1].Value.Trim().Trim([char]34).Trim([char]39)
         if ($tokenValue.Length -gt 20 -and $tokenValue -notmatch 'PASTE_YOUR_BOT_TOKEN_HERE') {
             $tokenReady = $true
         }
@@ -232,9 +232,9 @@ foreach ($logName in @("bot.log", "autostart.log")) {
 
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 $script:Checks | Set-Content -LiteralPath $ReportPath -Encoding UTF8
-$failedCount = @($script:Checks | Where-Object { $_ -like "[FAIL]*" }).Count
-$passedCount = @($script:Checks | Where-Object { $_ -like "[PASS]*" }).Count
-$warningCount = @($script:Checks | Where-Object { $_ -like "[WARN]*" }).Count
+$failedCount = @($script:Checks | Where-Object { $_.StartsWith("[FAIL]") }).Count
+$passedCount = @($script:Checks | Where-Object { $_.StartsWith("[PASS]") }).Count
+$warningCount = @($script:Checks | Where-Object { $_.StartsWith("[WARN]") }).Count
 
 Write-Host ""
 Write-Host ("Summary: {0} passed, {1} warning(s), {2} failed." -f $passedCount, $warningCount, $failedCount)
