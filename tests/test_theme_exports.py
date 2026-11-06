@@ -133,6 +133,14 @@ class ThemeExportTests(unittest.TestCase):
         self.assertEqual(bot.default_theme("en")["name"], "My theme")
         self.assertEqual(bot.default_theme("ru")["name"], "Моя тема")
 
+    def test_photo_progress_text_has_a_real_line_break_in_both_languages(self):
+        ru = bot.tr("ru", "photo_progress", percent=45, stage="Подбираю цвета…")
+        en = bot.tr("en", "photo_progress", percent=45, stage="Picking colours…")
+        self.assertIn("\\n", ru)
+        self.assertIn("\\n", en)
+        self.assertIn("45%", ru)
+        self.assertIn("45%", en)
+
     def test_photo_download_progress_buffer_reports_real_percentages(self):
         updates = []
         buffer = bot.ProgressBytesIO(100, updates.append)
