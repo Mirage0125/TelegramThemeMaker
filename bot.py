@@ -1605,9 +1605,10 @@ async def show_theme(
     wallpaper_path: str | None = None,
     prefix: str = "",
     image_palette: list[str] | None = None,
+    language: str | None = None,
 ):
     ensure_text_colors(theme)
-    language = user_language(message.from_user.id)
+    language = language or user_language(message.from_user.id)
     preview = render_preview(theme, wallpaper_path, image_palette)
     title = html.escape(str(theme.get("name", tr(language, "default_theme_name"))))
     image_note = tr(language, "theme_wallpaper") if wallpaper_path else tr(language, "theme_solid")
@@ -1713,8 +1714,13 @@ async def select_language(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Unknown language", show_alert=True)
         return
     LANGUAGE_PREFERENCES.set_language(callback.from_user.id, language)
-    await state.clear()
-    await state.update_data(theme=default_theme(language), wallpaper_path=None)
+    data = await state.get_data()
+    theme = data.get("theme")
+    if theme is None:
+        theme = default_theme(language)
+    elif theme.get("name") in ("Моя тема", "My theme"):
+        theme["name"] = tr(language, "default_theme_name")
+    await state.update_data(theme=theme)
     await callback.message.edit_text(tr(language, "language_selected"))
     await send_welcome(callback.message, language)
     await callback.answer(tr(language, "language_saved"))
@@ -1762,8 +1768,8 @@ async def cancel_command(message: Message, state: FSMContext):
     await message.answer(tr(language, "cancelled"), reply_markup=main_menu(language))
 
 
-async def send_help(message: Message):
-    language = user_language(message.from_user.id)
+async def send_help(message: Message, language: str | None = None):
+    language = language or user_language(message.from_user.id)
     await message.answer(
         tr(language, "help_title") + tr(language, "help_body"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -1777,7 +1783,8 @@ async def send_help(message: Message):
 @dp.callback_query(F.data == "help")
 async def help_callback(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
-    await send_help(callback.message)
+    language = user_language(callback.from_user.id)
+    await send_help(callback.message, language)
     await callback.answer()
 
 
@@ -1796,7 +1803,7 @@ async def create_callback(callback: CallbackQuery, state: FSMContext):
     language = user_language(callback.from_user.id)
     theme = default_theme(language)
     await state.update_data(theme=theme, wallpaper_path=None)
-    await show_theme(callback.message, theme, prefix=tr(language, "prefix_create"))
+    await show_theme(callback.message, theme, prefix=tr(language, "prefix_create"), language=language)
     await callback.answer()
 
 
@@ -1905,6 +1912,7 @@ async def set_extracted_color(callback: CallbackQuery, state: FSMContext):
         data.get("wallpaper_path"),
         prefix=tr(language, "prefix_color_selected", field=field_label(language, field), color=color),
         image_palette=palette,
+        language=language,
     )
     await callback.answer(tr(language, "photo_color_applied"))
 
@@ -1928,6 +1936,7 @@ async def shuffle_photo_palette(callback: CallbackQuery, state: FSMContext):
         data.get("wallpaper_path"),
         prefix=tr(language, "prefix_palette_shuffled"),
         image_palette=palette,
+        language=language,
     )
     await callback.answer(tr(language, "colors_shuffled"))
 
@@ -2123,14 +2132,15 @@ async def reset_theme(callback: CallbackQuery, state: FSMContext):
         data.get("wallpaper_path"),
         prefix=tr(language, "prefix_reset"),
         image_palette=data.get("image_palette"),
+        language=language,
     )
     await callback.answer()
 
 
 
 
-async def show_catalog(message: Message):
-    language = user_language(message.from_user.id)
+async def show_catalog(message: Message, language: str | None = None):
+    language = language or user_language(message.from_user.id)
     items = load_catalog()
     catalog_translations = {
         "midnight": ("Midnight", "Cool dark palette"),
@@ -2165,7 +2175,8 @@ async def show_catalog(message: Message):
 @dp.callback_query(F.data == "catalog")
 async def catalog_callback(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
-    await show_catalog(callback.message)
+    language = user_language(callback.from_user.id)
+    await show_catalog(callback.message, language)
     await callback.answer()
 
 
@@ -2195,7 +2206,7 @@ async def use_preset(callback: CallbackQuery, state: FSMContext):
     ensure_text_colors(theme)
     await state.clear()
     await state.update_data(theme=theme, wallpaper_path=None)
-    await show_theme(callback.message, theme, prefix=tr(language, "prefix_preset"))
+    await show_theme(callback.message, theme, prefix=tr(language, "prefix_preset"), language=language)
     await callback.answer()
 
 
