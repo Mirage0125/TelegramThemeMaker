@@ -1592,7 +1592,7 @@ class PublicOnlyResolver(aiohttp.abc.AbstractResolver):
         await self._delegate.close()
 
 
-async def safe_download_image(url: str) -> bytes:
+async def safe_download_image(url: str, progress_callback=None) -> bytes:
     """Download a public image URL, validating redirects and the actual connection IP."""
     current_url = url.strip()
     timeout = aiohttp.ClientTimeout(total=25, connect=8)
@@ -1632,14 +1632,23 @@ async def safe_download_image(url: str) -> bytes:
                 length = int(response.headers.get("Content-Length", "0") or 0)
                 if length > MAX_IMAGE_BYTES:
                     raise ValueError("Изображение больше 12 МБ.")
-                data = await response.content.read(MAX_IMAGE_BYTES + 1)
-                if len(data) > MAX_IMAGE_BYTES:
-                    raise ValueError("Изображение больше 12 МБ.")
-                return data
+                data = bytearray()
+                last_reported_step = 0
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    data.extend(chunk)
+                    if len(data) > MAX_IMAGE_BYTES:
+                        raise ValueError("Изображение больше 12 МБ.")
+                    if progress_callback and length > 0:
+                        percent = min(100, int(len(data) * 100 / length))
+                        step = percent // 20
+                        if step > last_reported_step or percent == 100:
+                            last_reported_step = step
+                            progress_callback(percent)
+                return bytes(data)
     raise ValueError("Слишком много перенаправлений. Скачай изображение и отправь его файлом.")
 
 
-async def download_telegram_image(message: Message, bot: Bot) -> bytes:
+async def download_telegram_image(message: Message, bot: Bot, progress_callback=None) -> bytes:
     if message.photo:
         file_obj = await bot.get_file(message.photo[-1].file_id)
     elif message.document:
@@ -1651,7 +1660,10 @@ async def download_telegram_image(message: Message, bot: Bot) -> bytes:
         file_obj = await bot.get_file(doc.file_id)
     else:
         raise ValueError("Отправь картинку как фото или как файл.")
-    buffer = io.BytesIO()
+
+    if file_obj.file_size and file_obj.file_size > MAX_IMAGE_BYTES:
+        raise ValueError("Изображение больше 12 МБ.")
+    buffer = ProgressBytesIO(file_obj.file_size, progress_callback)
     await bot.download_file(file_obj.file_path, destination=buffer)
     return buffer.getvalue()
 
@@ -1663,10 +1675,13 @@ async def show_theme(
     prefix: str = "",
     image_palette: list[str] | None = None,
     language: str | None = None,
+    progress_message: Message | None = None,
 ):
     ensure_text_colors(theme)
     language = language or user_language(message.from_user.id)
-    preview = render_preview(theme, wallpaper_path, image_palette)
+    if progress_message:
+        await update_photo_progress(progress_message, language, 87, "photo_stage_preview")
+    preview = await asyncio.to_thread(render_preview, theme, wallpaper_path, image_palette)
     title = html.escape(str(theme.get("name", tr(language, "default_theme_name"))))
     image_note = tr(language, "theme_wallpaper") if wallpaper_path else tr(language, "theme_solid")
     palette_note = ""
@@ -1693,6 +1708,8 @@ async def show_theme(
         reply_markup=theme_keyboard(language, bool(image_palette)),
         parse_mode=ParseMode.HTML,
     )
+    if progress_message:
+        await update_photo_progress(progress_message, language, 100, "photo_stage_done")
 
 
 def welcome_cover_path() -> Path:
