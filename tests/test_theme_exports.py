@@ -6,6 +6,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from PIL import Image, ImageDraw
 
@@ -142,18 +143,32 @@ class ThemeExportTests(unittest.TestCase):
         self.assertIn("45%", ru)
         self.assertIn("45%", en)
 
-    def test_telegram_photo_download_uses_extended_timeouts(self):
+    def test_telegram_photo_download_retries_gateway_and_network_timeouts(self):
         class FakeBot:
             def __init__(self):
                 self.get_file_timeout = None
                 self.download_timeout = None
+                self.get_file_calls = 0
+                self.download_calls = 0
 
             async def get_file(self, file_id, request_timeout=None):
+                self.get_file_calls += 1
                 self.get_file_timeout = request_timeout
+                if self.get_file_calls == 1:
+                    raise bot.TelegramServerError(
+                        method=SimpleNamespace(),
+                        message="Gateway Timeout",
+                    )
                 return SimpleNamespace(file_path="photos/test.jpg", file_size=10)
 
             async def download_file(self, file_path, destination, timeout=30):
+                self.download_calls += 1
                 self.download_timeout = timeout
+                if self.download_calls == 1:
+                    raise bot.TelegramNetworkError(
+                        method=SimpleNamespace(),
+                        message="Request timeout error",
+                    )
                 destination.write(b"0123456789")
 
         async def exercise():
@@ -162,13 +177,16 @@ class ThemeExportTests(unittest.TestCase):
                 photo=[SimpleNamespace(file_id="photo-id", file_size=10)],
                 document=None,
             )
-            payload = await bot.download_telegram_image(fake_message, fake_bot)
+            with patch("bot.asyncio.sleep", new=AsyncMock()):
+                payload = await bot.download_telegram_image(fake_message, fake_bot)
             return fake_bot, payload
 
         fake_bot, payload = asyncio.run(exercise())
         self.assertEqual(payload, b"0123456789")
         self.assertEqual(fake_bot.get_file_timeout, 120)
         self.assertEqual(fake_bot.download_timeout, 180)
+        self.assertEqual(fake_bot.get_file_calls, 2)
+        self.assertEqual(fake_bot.download_calls, 2)
 
     def test_photo_download_progress_buffer_reports_real_percentages(self):
         updates = []
