@@ -55,6 +55,7 @@ jobs:
           rsync -a ./ dist/TelegramThemeMaker/ \
             --exclude='.git/' \
             --exclude='.github/' \
+            --exclude='/assets/' \
             --exclude='.env' \
             --exclude='.env.*' \
             --exclude='.venv/' \
@@ -67,6 +68,21 @@ jobs:
             --exclude='.update-state.json' \
             --exclude='*.pyc' \
             --exclude='*.log'
+          if [[ ! -s assets/welcome.png ]]; then
+            echo "Expected bundled welcome image assets/welcome.png is missing."
+            exit 1
+          fi
+          mkdir -p dist/TelegramThemeMaker/defaults
+          cp assets/welcome.png dist/TelegramThemeMaker/defaults/welcome.png
+
+          # Guard the migration: the first update from 3.7.3 must never contain
+          # an assets/ path because that older updater cannot preserve it.
+          if find dist/TelegramThemeMaker/assets -type f -print -quit 2>/dev/null | grep -q .; then
+            echo "Release staging unexpectedly contains user-owned assets."
+            exit 1
+          fi
+          test -s dist/TelegramThemeMaker/defaults/welcome.png
+
           cd dist
           zip -qr "../TelegramThemeMaker_v${VERSION}_Windows.zip" TelegramThemeMaker
           cd ..
