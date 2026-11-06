@@ -1721,7 +1721,10 @@ async def select_language(callback: CallbackQuery, state: FSMContext):
     elif theme.get("name") in ("Моя тема", "My theme"):
         theme["name"] = tr(language, "default_theme_name")
     await state.update_data(theme=theme)
-    await callback.message.edit_text(tr(language, "language_selected"))
+    await callback.message.edit_text(
+        tr(language, "language_selected"),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
+    )
     await send_welcome(callback.message, language)
     await callback.answer(tr(language, "language_saved"))
 
@@ -2040,7 +2043,6 @@ async def choose_opacity(callback: CallbackQuery, state: FSMContext):
     if field not in ("outgoing", "incoming"):
         await callback.answer(tr(language, "field_unknown"), show_alert=True)
         return
-    label_key = "opacity_label_outgoing" if field == "outgoing" else "opacity_label_incoming"
     prompt = tr(language, "opacity_prompt_outgoing" if field == "outgoing" else "opacity_prompt_incoming")
     prompt += " " + tr(language, "opacity_explainer")
     await callback.message.answer(prompt, reply_markup=opacity_keyboard(language, field))
