@@ -128,7 +128,7 @@ class ThemeExportTests(unittest.TestCase):
         editor = bot.theme_keyboard("en")
         editor_labels = [button.text for row in editor.inline_keyboard for button in row]
         self.assertIn("Main background", editor_labels)
-        self.assertIn("Export theme", editor_labels)
+        self.assertIn("📦 Export theme", editor_labels)
 
         self.assertEqual(bot.default_theme("en")["name"], "My theme")
         self.assertEqual(bot.default_theme("ru")["name"], "Моя тема")
