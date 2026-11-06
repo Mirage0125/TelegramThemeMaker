@@ -1592,6 +1592,80 @@ class PublicOnlyResolver(aiohttp.abc.AbstractResolver):
         await self._delegate.close()
 
 
+async def update_photo_progress(progress_message: Message, language: str, percent: int, stage_key: str):
+    percent = max(0, min(100, int(percent)))
+    progress_text = tr(
+        language,
+        "photo_progress",
+        percent=percent,
+        stage=tr(language, stage_key),
+    )
+    try:
+        await progress_message.edit_text(progress_text, parse_mode=ParseMode.HTML)
+    except Exception as exc:
+        # Progress is informational; a Telegram edit error must not stop image processing.
+        print(f"Не удалось обновить сообщение прогресса: {exc}")
+
+
+async def download_with_progress(progress_message: Message, language: str, downloader):
+    """Run an async downloader while reflecting byte-based progress in Telegram."""
+    queue: asyncio.Queue[int] = asyncio.Queue()
+
+    def report(percent: int):
+        queue.put_nowait(max(0, min(100, int(percent))))
+
+    await update_photo_progress(progress_message, language, 3, "photo_stage_downloading")
+    task = asyncio.create_task(downloader(report))
+    displayed_percent = 3
+    while not task.done():
+        try:
+            downloaded_percent = await asyncio.wait_for(queue.get(), timeout=0.4)
+        except asyncio.TimeoutError:
+            continue
+        # Reserve the first 30% for actual download progress.
+        current_percent = 5 + downloaded_percent * 22 // 100
+        if current_percent > displayed_percent:
+            displayed_percent = current_percent
+            await update_photo_progress(
+                progress_message, language, displayed_percent, "photo_stage_downloading"
+            )
+
+    result = await task
+    await update_photo_progress(progress_message, language, 30, "photo_stage_analyzing")
+    return result
+
+
+async def prepare_photo_assets_with_progress(
+    user_id: int,
+    raw: bytes,
+    progress_message: Message,
+    language: str,
+) -> tuple[list[str], Path]:
+    """Run Pillow work off the event loop and relay actual processing stages."""
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
+
+    def report(percent: int, stage_key: str):
+        loop.call_soon_threadsafe(queue.put_nowait, (percent, stage_key))
+
+    task = asyncio.create_task(
+        asyncio.to_thread(
+            prepare_photo_assets,
+            user_id,
+            raw,
+            progress_callback=report,
+        )
+    )
+    while not task.done():
+        try:
+            percent, stage_key = await asyncio.wait_for(queue.get(), timeout=0.4)
+        except asyncio.TimeoutError:
+            continue
+        await update_photo_progress(progress_message, language, percent, stage_key)
+
+    return await task
+
+
 async def safe_download_image(url: str, progress_callback=None) -> bytes:
     """Download a public image URL, validating redirects and the actual connection IP."""
     current_url = url.strip()
