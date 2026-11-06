@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 from PIL import Image, ImageDraw
 
@@ -140,6 +141,34 @@ class ThemeExportTests(unittest.TestCase):
         self.assertIn("\n", en)
         self.assertIn("45%", ru)
         self.assertIn("45%", en)
+
+    def test_telegram_photo_download_uses_extended_timeouts(self):
+        class FakeBot:
+            def __init__(self):
+                self.get_file_timeout = None
+                self.download_timeout = None
+
+            async def get_file(self, file_id, request_timeout=None):
+                self.get_file_timeout = request_timeout
+                return SimpleNamespace(file_path="photos/test.jpg", file_size=10)
+
+            async def download_file(self, file_path, destination, timeout=30):
+                self.download_timeout = timeout
+                destination.write(b"0123456789")
+
+        async def exercise():
+            fake_bot = FakeBot()
+            fake_message = SimpleNamespace(
+                photo=[SimpleNamespace(file_id="photo-id", file_size=10)],
+                document=None,
+            )
+            payload = await bot.download_telegram_image(fake_message, fake_bot)
+            return fake_bot, payload
+
+        fake_bot, payload = asyncio.run(exercise())
+        self.assertEqual(payload, b"0123456789")
+        self.assertEqual(fake_bot.get_file_timeout, 120)
+        self.assertEqual(fake_bot.download_timeout, 180)
 
     def test_photo_download_progress_buffer_reports_real_percentages(self):
         updates = []
