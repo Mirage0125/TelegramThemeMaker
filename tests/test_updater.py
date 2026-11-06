@@ -18,6 +18,7 @@ class UpdaterSafetyTests(unittest.TestCase):
                 archive.writestr("TelegramThemeMaker/bot.py", "# bot")
                 archive.writestr("TelegramThemeMaker/BackgroundRunner.py", "# runner")
                 archive.writestr("TelegramThemeMaker/UpdateManager.py", "# updater")
+                archive.writestr("TelegramThemeMaker/SQLiteStorage.py", "# storage")
                 archive.writestr("TelegramThemeMaker/VERSION.txt", "3.8.0")
                 archive.writestr("TelegramThemeMaker/requirements.txt", "aiogram>=3.13,<4.0")
                 archive.writestr("TelegramThemeMaker/assets/welcome.png", b"replacement image")
