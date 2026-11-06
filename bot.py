@@ -1908,12 +1908,6 @@ async def image_upload(message: Message, state: FSMContext, bot: Bot):
         )
         await apply_image_to_theme(message, state, raw, progress_message)
     except (ValueError, UnidentifiedImageError, Image.DecompressionBombError, OSError) as exc:
-        await update_photo_progress(
-            progress_message,
-            language,
-            100,
-            "photo_stage_done",
-        )
         try:
             await progress_message.edit_text(
                 tr(language, "photo_progress_error", error=html.escape(str(exc))),
