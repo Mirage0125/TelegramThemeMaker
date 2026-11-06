@@ -12,6 +12,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("--exclude='/assets/'", workflow)
         self.assertIn("if grep -q '^TelegramThemeMaker/assets/' release-file-list.txt", workflow)
 
+    def test_release_zip_excludes_development_tests(self):
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("--exclude='/tests/'", workflow)
+
     def test_release_zip_contains_bundled_default_cover(self):
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn(
