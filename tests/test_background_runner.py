@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from BackgroundRunner import AlreadyRunningError, acquire_instance_lock
+from BackgroundRunner import acquire_instance_lock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +16,7 @@ class InstanceLockTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             lock_path = Path(directory) / ".bot.lock"
             first_handle = acquire_instance_lock(lock_path)
-            code = """
+            blocked_code = """
 import sys
 from pathlib import Path
 from BackgroundRunner import AlreadyRunningError, acquire_instance_lock
@@ -27,11 +27,22 @@ except AlreadyRunningError:
 handle.close()
 raise SystemExit(1)
 """
+            released_code = """
+import sys
+from pathlib import Path
+from BackgroundRunner import AlreadyRunningError, acquire_instance_lock
+try:
+    handle = acquire_instance_lock(Path(sys.argv[1]))
+except AlreadyRunningError:
+    raise SystemExit(1)
+handle.close()
+raise SystemExit(0)
+"""
             environment = os.environ.copy()
             environment["PYTHONPATH"] = str(PROJECT_ROOT)
             try:
                 blocked = subprocess.run(
-                    [sys.executable, "-c", code, str(lock_path)],
+                    [sys.executable, "-c", blocked_code, str(lock_path)],
                     cwd=PROJECT_ROOT,
                     env=environment,
                     capture_output=True,
@@ -48,10 +59,7 @@ raise SystemExit(1)
                 first_handle.close()
 
             released = subprocess.run(
-                [sys.executable, "-c", code.replace(
-                    "except AlreadyRunningError:\n    raise SystemExit(0)",
-                    "except AlreadyRunningError:\n    raise SystemExit(1)",
-                ), str(lock_path)],
+                [sys.executable, "-c", released_code, str(lock_path)],
                 cwd=PROJECT_ROOT,
                 env=environment,
                 capture_output=True,
@@ -61,7 +69,7 @@ raise SystemExit(1)
             )
             self.assertEqual(
                 released.returncode,
-                1,
+                0,
                 msg=f"Lock did not become available after release: {released.stderr}",
             )
 
