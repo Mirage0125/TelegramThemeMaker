@@ -113,5 +113,25 @@ class ThemeExportTests(unittest.TestCase):
         self.assertTrue(all(bot.parse_color(color) for color in palette))
 
 
+    def test_language_picker_and_english_menus(self):
+        picker = bot.language_keyboard()
+        self.assertEqual(
+            [button.callback_data for button in picker.inline_keyboard[0]],
+            ["lang:ru", "lang:en"],
+        )
+
+        menu = bot.main_menu("en")
+        menu_labels = [button.text for row in menu.inline_keyboard for button in row]
+        self.assertIn("🖼 Create from a photo", menu_labels)
+        self.assertIn("🌐 Language", menu_labels)
+
+        editor = bot.theme_keyboard("en")
+        editor_labels = [button.text for row in editor.inline_keyboard for button in row]
+        self.assertIn("Main background", editor_labels)
+        self.assertIn("📦 Export theme", editor_labels)
+
+        self.assertEqual(bot.default_theme("en")["name"], "My theme")
+        self.assertEqual(bot.default_theme("ru")["name"], "Моя тема")
+
 if __name__ == "__main__":
     unittest.main()

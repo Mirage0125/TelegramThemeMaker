@@ -32,6 +32,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 from dotenv import load_dotenv
 
 from SQLiteStorage import SQLiteStorage
+from Localization import LanguagePreferences, text as tr
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
@@ -51,6 +52,16 @@ Image.MAX_IMAGE_PIXELS = 25_000_000
 
 if not TOKEN or TOKEN == "PASTE_YOUR_BOT_TOKEN_HERE":
     raise SystemExit("Не найден токен. Открой .env, вставь токен от @BotFather и перезапусти Start.bat.")
+
+LANGUAGE_PREFERENCES = LanguagePreferences(USER_DATA / "languages.sqlite3")
+
+def user_language(user_id: int) -> str:
+    return LANGUAGE_PREFERENCES.get_language(user_id)
+
+def default_theme(language: str = "ru") -> dict:
+    theme = DEFAULT_THEME.copy()
+    theme["name"] = tr(language, "default_theme_name")
+    return theme
 
 dp = Dispatcher(
     storage=SQLiteStorage(USER_DATA / "fsm.sqlite3"),
@@ -137,82 +148,112 @@ def load_catalog():
         return []
 
 
-def main_menu():
+def language_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang:ru"),
+        InlineKeyboardButton(text="🇬🇧 English", callback_data="lang:en"),
+    ]])
+
+
+def main_menu(language: str = "ru"):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🖼 Создать тему из фото", callback_data="image")],
-        [InlineKeyboardButton(text="🎨 Собрать тему вручную", callback_data="create")],
-        [InlineKeyboardButton(text="📚 Готовые темы", callback_data="catalog")],
-        [InlineKeyboardButton(text="❔ Как установить тему", callback_data="help")],
+        [InlineKeyboardButton(text=tr(language, "menu_photo"), callback_data="image")],
+        [InlineKeyboardButton(text=tr(language, "menu_manual"), callback_data="create")],
+        [InlineKeyboardButton(text=tr(language, "menu_catalog"), callback_data="catalog")],
+        [InlineKeyboardButton(text=tr(language, "menu_help"), callback_data="help")],
+        [InlineKeyboardButton(text=tr(language, "language_button"), callback_data="language")],
     ])
 
 
-def theme_keyboard(has_image_palette: bool = False):
+def field_label(language: str, field: str) -> str:
+    return tr(language, f"field_{field}")
+
+
+def field_help(language: str, field: str) -> str:
+    return tr(language, f"field_{field}_help")
+
+
+def color_button_labels(language: str):
+    if language == "en":
+        keys = [
+            ("color_black", "black"), ("color_white", "white"), ("color_gray", "gray"),
+            ("color_red", "red"), ("color_orange", "orange"), ("color_yellow", "yellow"),
+            ("color_green", "green"), ("color_blue", "blue"), ("color_lightblue", "lightblue"),
+            ("color_cyan", "cyan"), ("color_purple", "purple"), ("color_pink", "pink"),
+        ]
+        return [(tr(language, key), value) for key, value in keys]
+    return COLOR_BUTTONS
+
+
+def theme_keyboard(language: str = "ru", has_image_palette: bool = False):
     rows = [
-        [InlineKeyboardButton(text="Основной цвет", callback_data="field:background"),
-         InlineKeyboardButton(text="Акцент", callback_data="field:accent")],
-        [InlineKeyboardButton(text="Мои сообщения", callback_data="field:outgoing"),
-         InlineKeyboardButton(text="Входящие сообщения", callback_data="field:incoming")],
-        [InlineKeyboardButton(text="Основной текст", callback_data="field:text"),
-         InlineKeyboardButton(text="Текст сообщений", callback_data="field:message_text")],
-        [InlineKeyboardButton(text="Прозрачность моих сообщений", callback_data="opacity:outgoing"),
-         InlineKeyboardButton(text="Прозрачность входящих", callback_data="opacity:incoming")],
-        [InlineKeyboardButton(text="✏️ Название темы", callback_data="rename"),
-         InlineKeyboardButton(text="↺ Сбросить цвета", callback_data="reset")],
+        [InlineKeyboardButton(text=field_label(language, "background"), callback_data="field:background"),
+         InlineKeyboardButton(text=field_label(language, "accent"), callback_data="field:accent")],
+        [InlineKeyboardButton(text=field_label(language, "outgoing"), callback_data="field:outgoing"),
+         InlineKeyboardButton(text=field_label(language, "incoming"), callback_data="field:incoming")],
+        [InlineKeyboardButton(text=field_label(language, "text"), callback_data="field:text"),
+         InlineKeyboardButton(text=field_label(language, "message_text"), callback_data="field:message_text")],
+        [InlineKeyboardButton(text=tr(language, "opacity_outgoing"), callback_data="opacity:outgoing"),
+         InlineKeyboardButton(text=tr(language, "opacity_incoming"), callback_data="opacity:incoming")],
+        [InlineKeyboardButton(text=tr(language, "rename"), callback_data="rename"),
+         InlineKeyboardButton(text=tr(language, "reset"), callback_data="reset")],
     ]
     if has_image_palette:
-        rows.append([InlineKeyboardButton(text="🎲 Перемешать цвета", callback_data="shuffle_palette")])
+        rows.append([InlineKeyboardButton(text=tr(language, "shuffle"), callback_data="shuffle_palette")])
     rows.extend([
-        [InlineKeyboardButton(text="📦 Экспортировать тему", callback_data="export_menu")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")],
+        [InlineKeyboardButton(text=tr(language, "export"), callback_data="export_menu")],
+        [InlineKeyboardButton(text=tr(language, "home"), callback_data="home")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def color_choice_keyboard(field: str, image_palette: list[str] | None = None):
+def color_choice_keyboard(language: str, field: str, image_palette: list[str] | None = None):
     rows = []
     if image_palette:
-        # In photo mode, offer only real colors extracted from the uploaded image.
         palette = list(dict.fromkeys(color for color in image_palette if parse_color(color)))[:8]
         for i in range(0, len(palette), 2):
             rows.append([
                 InlineKeyboardButton(text=color, callback_data=f"csethex:{field}:{color.lstrip('#')}")
                 for color in palette[i:i + 2]
             ])
-        rows.append([InlineKeyboardButton(text="🎲 Перемешать цвета", callback_data="shuffle_palette")])
-        rows.append([InlineKeyboardButton(text="✏️ Ввести свой HEX", callback_data=f"custom:{field}")])
+        rows.append([InlineKeyboardButton(text=tr(language, "shuffle"), callback_data="shuffle_palette")])
+        rows.append([InlineKeyboardButton(text=tr(language, "custom_hex"), callback_data=f"custom:{field}")])
     else:
-        for i in range(0, len(COLOR_BUTTONS), 3):
-            row = [InlineKeyboardButton(text=label, callback_data=f"cset:{field}:{key}") for label, key in COLOR_BUTTONS[i:i + 3]]
-            rows.append(row)
-        rows.append([InlineKeyboardButton(text="✏️ Ввести название или HEX", callback_data=f"custom:{field}")])
-    rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data="back_theme")])
+        buttons = color_button_labels(language)
+        for i in range(0, len(buttons), 3):
+            rows.append([
+                InlineKeyboardButton(text=label, callback_data=f"cset:{field}:{key}")
+                for label, key in buttons[i:i + 3]
+            ])
+        rows.append([InlineKeyboardButton(text=tr(language, "custom_color"), callback_data=f"custom:{field}")])
+    rows.append([InlineKeyboardButton(text=tr(language, "back"), callback_data="back_theme")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def opacity_keyboard(field: str):
+def opacity_keyboard(language: str, field: str):
     rows = []
     for pair in ((100, 90, 80), (70, 60, 50), (40, 30, 20)):
         rows.append([InlineKeyboardButton(text=f"{value}%", callback_data=f"opset:{field}:{value}") for value in pair])
-    rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data="back_theme")])
+    rows.append([InlineKeyboardButton(text=tr(language, "back"), callback_data="back_theme")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def export_keyboard():
+def export_keyboard(language: str):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🖥 Windows — .tdesktop-theme", callback_data="export:windows")],
         [InlineKeyboardButton(text="🤖 Android — .attheme", callback_data="export:android")],
         [InlineKeyboardButton(text="📱 iPhone — .tgios-theme", callback_data="export:ios")],
         [InlineKeyboardButton(text="🍎 macOS — .palette", callback_data="export:macos")],
-        [InlineKeyboardButton(text="Другие форматы…", callback_data="export:other")],
-        [InlineKeyboardButton(text="↩️ Назад к настройкам", callback_data="back_theme")],
+        [InlineKeyboardButton(text=tr(language, "export_other"), callback_data="export:other")],
+        [InlineKeyboardButton(text=tr(language, "back_export"), callback_data="back_theme")],
     ])
 
 
-def other_export_keyboard():
+def other_export_keyboard(language: str):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Telegram X — .tgx-theme", callback_data="export:tgx")],
         [InlineKeyboardButton(text="Desktop Editor — .tdesktop-palette", callback_data="export:desktop_palette")],
-        [InlineKeyboardButton(text="↩️ Назад", callback_data="export_menu")],
+        [InlineKeyboardButton(text=tr(language, "back"), callback_data="export_menu")],
     ])
 
 
@@ -1564,34 +1605,35 @@ async def show_theme(
     wallpaper_path: str | None = None,
     prefix: str = "",
     image_palette: list[str] | None = None,
+    language: str | None = None,
 ):
     ensure_text_colors(theme)
+    language = language or user_language(message.from_user.id)
     preview = render_preview(theme, wallpaper_path, image_palette)
-    title = html.escape(str(theme.get("name", "Моя тема")))
-    image_note = "На макете показаны выбранные обои." if wallpaper_path else "Пока используется однотонный фон. Фото можно добавить через главное меню."
+    title = html.escape(str(theme.get("name", tr(language, "default_theme_name"))))
+    image_note = tr(language, "theme_wallpaper") if wallpaper_path else tr(language, "theme_solid")
     palette_note = ""
     if image_palette:
         palette_codes = " · ".join(f"<code>{html.escape(color)}</code>" for color in image_palette)
         palette_note = (
-            f"\n\n<b>Палитра из фото:</b> {palette_codes}\n"
-            "При настройке любого параметра можно выбрать один из этих оттенков. "
-            "Кнопка «Перемешать цвета» соберёт новое сочетание, не меняя фотографию."
+            f"\n\n<b>{tr(language, 'palette_note_title')}</b> {palette_codes}\n"
+            f"{tr(language, 'palette_note')}"
         )
     caption = (
         f"<b>{title}</b>\n\n"
         f"{html.escape(prefix)}{image_note}{palette_note}\n\n"
-        "<b>Что означает каждый пункт:</b>\n"
-        "• Основной цвет — панели и фон окон.\n"
-        "• Акцент — ссылки, кнопки, выделение, галочки и онлайн.\n"
-        "• Мои сообщения — фон твоих пузырей.\n"
-        "• Входящие — фон сообщений собеседников.\n"
-        "• Прозрачность — насколько видны обои сквозь пузыри.\n\n"
-        "Основной текст и текст сообщений можно менять отдельно. По умолчанию они выбираются автоматически по фону интерфейса и пузырей."
+        f"<b>{tr(language, 'theme_legend_title')}</b>\n"
+        f"{tr(language, 'legend_background')}\n"
+        f"{tr(language, 'legend_accent')}\n"
+        f"{tr(language, 'legend_outgoing')}\n"
+        f"{tr(language, 'legend_incoming')}\n"
+        f"{tr(language, 'legend_opacity')}\n\n"
+        f"{tr(language, 'theme_auto_text')}"
     )
     await message.answer_photo(
         BufferedInputFile(preview, filename="theme-preview.jpg"),
         caption=caption,
-        reply_markup=theme_keyboard(bool(image_palette)),
+        reply_markup=theme_keyboard(language, bool(image_palette)),
         parse_mode=ParseMode.HTML,
     )
 
@@ -1601,63 +1643,107 @@ def welcome_cover_path() -> Path:
     return COVER_PATH if COVER_PATH.is_file() else DEFAULT_COVER_PATH
 
 
-async def send_welcome(message: Message):
-    text = (
-        "<b>Theme Maker</b>\n"
-        "Создавай оформление Telegram по фотографии или вручную.\n\n"
-        "Загрузи картинку — бот подберёт цвета и добавит её как фон там, где формат поддерживает встроенные обои.\n"
-        "Перед экспортом ты увидишь наглядный макет чата, а не список непонятных цветовых кодов.\n\n"
-        "Выбери, с чего начнём:"
+async def send_language_prompt(message: Message):
+    await message.answer(
+        "<b>Добро пожаловать в Theme Maker!</b>\n\n"
+        "Сначала выбери язык интерфейса / First, choose your interface language:",
+        reply_markup=language_keyboard(),
+        parse_mode=ParseMode.HTML,
     )
-    # Preserve a user's customized local cover; fall back to the bundled default.
+
+
+async def send_welcome(message: Message, language: str | None = None):
+    language = language or user_language(message.from_user.id)
+    welcome_text = tr(language, "welcome")
     cover_path = welcome_cover_path()
     if cover_path.is_file():
         await message.answer_photo(
             BufferedInputFile(cover_path.read_bytes(), filename="theme-maker-welcome.png"),
-            caption=text, reply_markup=main_menu(), parse_mode=ParseMode.HTML,
+            caption=welcome_text, reply_markup=main_menu(language), parse_mode=ParseMode.HTML,
         )
     else:
-        await message.answer(text, reply_markup=main_menu(), parse_mode=ParseMode.HTML)
+        await message.answer(welcome_text, reply_markup=main_menu(language), parse_mode=ParseMode.HTML)
 
 
 async def set_user_commands(bot: Bot):
-    commands = [
-        BotCommand(command="start", description="Главное меню"),
-        BotCommand(command="create", description="Создать тему вручную"),
-        BotCommand(command="fromphoto", description="Создать тему из фото"),
-        BotCommand(command="catalog", description="Готовые темы"),
-        BotCommand(command="help", description="Помощь и установка тем"),
-        BotCommand(command="cancel", description="Отменить текущий шаг"),
-        BotCommand(command="version", description="Версия и обновления"),
-    ]
-    await bot.set_my_commands(commands)
-    try:
-        await bot.set_my_description("Создание тем Telegram из фотографий и вручную. Визуальный предпросмотр и файлы тем для разных клиентов Telegram.")
-        await bot.set_my_short_description("Создавай темы Telegram из фотографий и цветов.")
-    except Exception as exc:
-        print(f"Не удалось обновить описание бота (не критично): {exc}")
+    for language in ("ru", "en"):
+        command_texts = tr(language, "commands")
+        commands = [
+            BotCommand(command="start", description=command_texts["start"]),
+            BotCommand(command="create", description=command_texts["create"]),
+            BotCommand(command="fromphoto", description=command_texts["fromphoto"]),
+            BotCommand(command="catalog", description=command_texts["catalog"]),
+            BotCommand(command="help", description=command_texts["help"]),
+            BotCommand(command="cancel", description=command_texts["cancel"]),
+            BotCommand(command="version", description=command_texts["version"]),
+        ]
+        if language == "ru":
+            await bot.set_my_commands(commands)
+            await bot.set_my_description(tr(language, "bot_description"))
+            await bot.set_my_short_description(tr(language, "bot_short_description"))
+        else:
+            await bot.set_my_commands(commands, language_code="en")
+            await bot.set_my_description(tr(language, "bot_description"), language_code="en")
+            await bot.set_my_short_description(tr(language, "bot_short_description"), language_code="en")
 
 
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
     await state.clear()
-    await state.update_data(theme=DEFAULT_THEME.copy(), wallpaper_path=None)
-    await send_welcome(message)
+    language = user_language(message.from_user.id)
+    await state.update_data(theme=default_theme(language), wallpaper_path=None)
+    await send_language_prompt(message)
+
+
+@dp.callback_query(F.data == "language")
+async def language_menu(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(None)
+    language = user_language(callback.from_user.id)
+    await callback.message.answer(
+        tr(language, "choose_language"),
+        reply_markup=language_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("lang:"))
+async def select_language(callback: CallbackQuery, state: FSMContext):
+    language = callback.data.split(":", 1)[1]
+    if language not in ("ru", "en"):
+        await callback.answer("Unknown language", show_alert=True)
+        return
+    LANGUAGE_PREFERENCES.set_language(callback.from_user.id, language)
+    data = await state.get_data()
+    theme = data.get("theme")
+    if theme is None:
+        theme = default_theme(language)
+    elif theme.get("name") in ("Моя тема", "My theme"):
+        theme["name"] = tr(language, "default_theme_name")
+    await state.update_data(theme=theme)
+    await callback.message.edit_text(
+        tr(language, "language_selected"),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
+    )
+    await send_welcome(callback.message, language)
+    await callback.answer(tr(language, "language_saved"))
 
 
 @dp.message(Command("create"))
 async def create_command(message: Message, state: FSMContext):
     await state.clear()
-    theme = DEFAULT_THEME.copy()
+    language = user_language(message.from_user.id)
+    theme = default_theme(language)
     await state.update_data(theme=theme, wallpaper_path=None)
-    await show_theme(message, theme, prefix="Создана новая тема.\n\n")
+    await show_theme(message, theme, prefix=tr(language, "prefix_create"))
 
 
 @dp.message(Command("fromphoto"))
 async def image_command(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(ThemeStates.waiting_image)
-    await message.answer("Пришли фотографию как фото/файл или вставь прямую ссылку на сам файл изображения. Картинка станет фоном чатов в форматах, которые поддерживают встроенные обои.")
+    language = user_language(message.from_user.id)
+    await message.answer(tr(language, "prompt_image_command"))
 
 
 @dp.message(Command("catalog"))
@@ -1674,33 +1760,24 @@ async def help_command(message: Message, state: FSMContext):
 
 @dp.message(Command("version"))
 async def version_command(message: Message):
-    await message.answer(
-        f"<b>Telegram Theme Maker {html.escape(APP_VERSION)}</b>\n"
-        "Проверка новых версий выполняется автоматически при запуске бота.\n"
-        "Если обновление найдено, оно устанавливается до запуска меню Telegram." ,
-        parse_mode=ParseMode.HTML,
-    )
+    language = user_language(message.from_user.id)
+    await message.answer(tr(language, "version_text", version=html.escape(APP_VERSION)), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("cancel"))
 async def cancel_command(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Текущий шаг отменён.", reply_markup=main_menu())
+    language = user_language(message.from_user.id)
+    await message.answer(tr(language, "cancelled"), reply_markup=main_menu(language))
 
 
-async def send_help(message: Message):
+async def send_help(message: Message, language: str | None = None):
+    language = language or user_language(message.from_user.id)
     await message.answer(
-        "<b>Форматы экспорта</b>\n\n"
-        "• <b>Windows / Telegram Desktop:</b> <code>.tdesktop-theme</code> — файл темы, картинка включается внутрь файла.\n"
-        "• <b>Desktop Theme Editor:</b> <code>.tdesktop-palette</code> — палитра для импорта через редактор тем в настройках Desktop.\n"
-        "• <b>Android:</b> <code>.attheme</code> — тема Android; выбранные обои встраиваются в файл через формат WPS.\n"
-        "• <b>iPhone / iOS:</b> <code>.tgios-theme</code> — локальный файл темы iOS. В этой версии он содержит цвета интерфейса; локальная фотография не встраивается в него.\n"
-        "• <b>macOS:</b> <code>.palette</code> — палитра для Telegram macOS.\n"
-        "• <b>Telegram X:</b> <code>.tgx-theme</code> — отдельный формат Telegram X. Фото-обои в этот файл не встраиваются.\n\n"
-        "Важно: файлы разных клиентов не взаимозаменяемы. Для облачной ссылки <code>t.me/addtheme/...</code> тему нужно опубликовать через официальный редактор от имени пользовательского аккаунта.",
+        tr(language, "help_title") + tr(language, "help_body"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Открыть редактор облачных тем", url="https://themes.telegram.org")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")],
+            [InlineKeyboardButton(text=tr(language, "help_cloud_editor"), url="https://themes.telegram.org")],
+            [InlineKeyboardButton(text=tr(language, "home"), callback_data="home")],
         ]),
         parse_mode=ParseMode.HTML,
     )
@@ -1709,24 +1786,27 @@ async def send_help(message: Message):
 @dp.callback_query(F.data == "help")
 async def help_callback(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
-    await send_help(callback.message)
+    language = user_language(callback.from_user.id)
+    await send_help(callback.message, language)
     await callback.answer()
 
 
 @dp.callback_query(F.data == "home")
 async def home(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await state.update_data(theme=DEFAULT_THEME.copy(), wallpaper_path=None)
-    await send_welcome(callback.message)
+    language = user_language(callback.from_user.id)
+    await state.update_data(theme=default_theme(language), wallpaper_path=None)
+    await send_welcome(callback.message, language)
     await callback.answer()
 
 
 @dp.callback_query(F.data == "create")
 async def create_callback(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    theme = DEFAULT_THEME.copy()
+    language = user_language(callback.from_user.id)
+    theme = default_theme(language)
     await state.update_data(theme=theme, wallpaper_path=None)
-    await show_theme(callback.message, theme, prefix="Создана новая тема.\n\n")
+    await show_theme(callback.message, theme, prefix=tr(language, "prefix_create"), language=language)
     await callback.answer()
 
 
@@ -1734,10 +1814,8 @@ async def create_callback(callback: CallbackQuery, state: FSMContext):
 async def image_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.set_state(ThemeStates.waiting_image)
-    await callback.message.answer(
-        "Пришли изображение как фото или файл. Можно также вставить прямую ссылку на сам JPG/PNG/WebP.\n\n"
-        "После загрузки я покажу макет Telegram с этой картинкой и подобранными цветами."
-    )
+    language = user_language(callback.from_user.id)
+    await callback.message.answer(tr(language, "prompt_image"))
     await callback.answer()
 
 
@@ -1747,31 +1825,36 @@ async def image_upload(message: Message, state: FSMContext, bot: Bot):
         raw = await download_telegram_image(message, bot)
         await apply_image_to_theme(message, state, raw)
     except (ValueError, UnidentifiedImageError, Image.DecompressionBombError, OSError) as exc:
-        await message.answer(f"Не получилось обработать изображение: {exc}")
+        language = user_language(message.from_user.id)
+        await message.answer(tr(language, "image_error", error=exc))
 
 
 @dp.message(ThemeStates.waiting_image, F.text)
 async def image_url(message: Message, state: FSMContext):
     url = (message.text or "").strip()
     if not url.lower().startswith(("http://", "https://")):
-        await message.answer("Жду изображение. Пришли его файлом или вставь прямую ссылку на картинку.")
+        language = user_language(message.from_user.id)
+        await message.answer(tr(language, "image_waiting"))
         return
     try:
         raw = await safe_download_image(url)
         await apply_image_to_theme(message, state, raw)
     except (ValueError, aiohttp.ClientError, asyncio.TimeoutError, UnidentifiedImageError, Image.DecompressionBombError, OSError) as exc:
-        await message.answer(f"Не удалось взять картинку по ссылке: {exc}")
+        language = user_language(message.from_user.id)
+        await message.answer(tr(language, "image_url_error", error=exc))
 
 
 async def apply_image_to_theme(message: Message, state: FSMContext, raw: bytes):
+    language = user_language(message.from_user.id)
     if len(raw) > MAX_IMAGE_BYTES:
-        await message.answer("Изображение слишком большое. Максимум 12 МБ.")
+        await message.answer(tr(language, "image_too_large"))
         return
     colors = extract_palette(raw)
     if not colors:
-        await message.answer("Не удалось извлечь цвета из изображения.")
+        await message.answer(tr(language, "image_no_colors"))
         return
     theme = create_photo_theme(colors)
+    theme["name"] = tr(language, "default_theme_name")
     wallpaper = save_user_wallpaper(message.from_user.id, raw)
     await state.clear()
     await state.update_data(theme=theme, photo_theme_original=theme.copy(), wallpaper_path=str(wallpaper), image_palette=colors)
@@ -1779,7 +1862,7 @@ async def apply_image_to_theme(message: Message, state: FSMContext, raw: bytes):
         message,
         theme,
         str(wallpaper),
-        prefix="Картинка стала фоном темы. Я извлёк из неё палитру — теперь можно выбирать отдельные оттенки или перемешать сочетание.\n\n",
+        prefix=tr(language, "prefix_photo"),
         image_palette=colors,
     )
 
@@ -1787,28 +1870,26 @@ async def apply_image_to_theme(message: Message, state: FSMContext, raw: bytes):
 @dp.callback_query(F.data.startswith("field:"))
 async def choose_field(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
+    language = user_language(callback.from_user.id)
     field = callback.data.split(":", 1)[1]
     if field not in FIELD_LABELS:
-        await callback.answer("Неизвестный параметр", show_alert=True)
+        await callback.answer(tr(language, "field_unknown"), show_alert=True)
         return
     data = await state.get_data()
     image_palette = data.get("image_palette")
     await state.update_data(editing_field=field)
-    instruction = (
-        "Выбери один из оттенков, которые бот нашёл на фотографии.\n"
-        "HEX-коды — это точные цвета исходного изображения."
-        if image_palette else
-        "Выбери обычное название цвета или введи свой цвет."
-    )
+    instruction = tr(language, "photo_palette_prompt") if image_palette else tr(language, "color_prompt")
     await callback.message.answer(
-        f"<b>{FIELD_LABELS[field]}</b>\n{FIELD_HELP[field]}\n\n{instruction}",
-        reply_markup=color_choice_keyboard(field, image_palette), parse_mode=ParseMode.HTML,
+        f"<b>{field_label(language, field)}</b>\n{field_help(language, field)}\n\n{instruction}",
+        reply_markup=color_choice_keyboard(language, field, image_palette),
+        parse_mode=ParseMode.HTML,
     )
     await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("csethex:"))
 async def set_extracted_color(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     try:
         _, field, raw_color = callback.data.split(":", 2)
         color = parse_color(raw_color)
@@ -1817,9 +1898,9 @@ async def set_extracted_color(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     palette = data.get("image_palette") or []
     if field not in FIELD_LABELS or not color or color not in palette:
-        await callback.answer("Этот цвет не найден в палитре фотографии", show_alert=True)
+        await callback.answer(tr(language, "color_not_found"), show_alert=True)
         return
-    theme = data.get("theme", DEFAULT_THEME.copy())
+    theme = data.get("theme", default_theme(language))
     theme[field] = color
     if field == "text":
         theme["text_auto"] = False
@@ -1832,62 +1913,73 @@ async def set_extracted_color(callback: CallbackQuery, state: FSMContext):
         callback.message,
         theme,
         data.get("wallpaper_path"),
-        prefix=f"Для параметра «{FIELD_LABELS[field]}» выбран цвет {color}.\n\n",
+        prefix=tr(language, "prefix_color_selected", field=field_label(language, field), color=color),
         image_palette=palette,
+        language=language,
     )
-    await callback.answer("Цвет из фотографии применён")
+    await callback.answer(tr(language, "photo_color_applied"))
 
 
 @dp.callback_query(F.data == "shuffle_palette")
 async def shuffle_photo_palette(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     data = await state.get_data()
     palette = data.get("image_palette") or []
     if not palette:
-        await callback.answer("Сначала создай тему из фотографии", show_alert=True)
+        await callback.answer(tr(language, "need_photo_first"), show_alert=True)
         return
-    current_theme = data.get("theme", DEFAULT_THEME.copy())
+    current_theme = data.get("theme", default_theme(language))
     theme = create_photo_theme(palette, previous_theme=current_theme)
+    theme["name"] = current_theme.get("name", tr(language, "default_theme_name"))
     await state.set_state(None)
     await state.update_data(theme=theme)
     await show_theme(
         callback.message,
         theme,
         data.get("wallpaper_path"),
-        prefix="Получилось новое сочетание из цветов той же фотографии.\n\n",
+        prefix=tr(language, "prefix_palette_shuffled"),
         image_palette=palette,
+        language=language,
     )
-    await callback.answer("Цвета перемешаны")
+    await callback.answer(tr(language, "colors_shuffled"))
+
+
 
 
 @dp.callback_query(F.data.startswith("custom:"))
 async def custom_color_start(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     field = callback.data.split(":", 1)[1]
     if field not in FIELD_LABELS:
-        await callback.answer("Неизвестный параметр", show_alert=True)
+        await callback.answer(tr(language, "field_unknown"), show_alert=True)
         return
     data = await state.get_data()
     await state.update_data(editing_field=field)
     await state.set_state(ThemeStates.waiting_color)
+    label = field_label(language, field)
     if data.get("image_palette"):
-        prompt = f"Введи свой HEX-цвет для «{FIELD_LABELS[field]}», например <code>#FF88AA</code> или <code>FF88AA</code>."
+        prompt = tr(language, "enter_hex_photo", field=html.escape(label))
     else:
-        prompt = f"Введи цвет для «{FIELD_LABELS[field]}». Можно написать <b>black</b>, <b>белый</b>, <b>red</b>, <b>серый</b>, <b>#FF88AA</b> или <b>FF88AA</b> без решётки."
+        prompt = tr(language, "enter_color", field=html.escape(label))
     await callback.message.answer(prompt, parse_mode=ParseMode.HTML)
     await callback.answer()
 
 
+
+
 @dp.callback_query(F.data.startswith("cset:"))
 async def set_named_color(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     try:
         _, field, color_name = callback.data.split(":", 2)
     except ValueError:
-        await callback.answer("Не удалось прочитать цвет", show_alert=True)
+        await callback.answer(tr(language, "color_read_error"), show_alert=True)
         return
     if field not in FIELD_LABELS or color_name not in NAMED_COLORS:
-        await callback.answer("Неизвестный цвет", show_alert=True)
+        await callback.answer(tr(language, "color_unknown"), show_alert=True)
         return
     data = await state.get_data()
-    theme = data.get("theme", DEFAULT_THEME.copy())
+    theme = data.get("theme", default_theme(language))
     theme[field] = NAMED_COLORS[color_name]
     await state.set_state(None)
     if field == "text":
@@ -1896,26 +1988,33 @@ async def set_named_color(callback: CallbackQuery, state: FSMContext):
         theme["message_text_auto"] = False
     ensure_text_colors(theme)
     await state.update_data(theme=theme)
-    await show_theme(callback.message, theme, data.get("wallpaper_path"), prefix=f"{FIELD_LABELS[field]} изменён.\n\n", image_palette=data.get("image_palette"))
+    await show_theme(
+        callback.message,
+        theme,
+        data.get("wallpaper_path"),
+        prefix=tr(language, "prefix_field_changed", field=field_label(language, field)),
+        image_palette=data.get("image_palette"),
+        language=language,
+    )
     await callback.answer()
+
+
 
 
 @dp.message(ThemeStates.waiting_color)
 async def set_color(message: Message, state: FSMContext):
+    language = user_language(message.from_user.id)
     data = await state.get_data()
     color = parse_color(message.text or "")
     if not color:
-        if data.get("image_palette"):
-            error_text = "Не распознал HEX. Введи шестизначный код, например <code>#FF88AA</code> или <code>FF88AA</code>."
-        else:
-            error_text = "Не распознал цвет. Напиши название (например, <b>black</b>, <b>white</b>, <b>gray</b>, <b>red</b>) или шестизначный код вроде <code>FF88AA</code> без #."
-        await message.answer(error_text, parse_mode=ParseMode.HTML)
+        error_key = "hex_invalid" if data.get("image_palette") else "color_invalid"
+        await message.answer(tr(language, error_key), parse_mode=ParseMode.HTML)
         return
-    theme = data.get("theme", DEFAULT_THEME.copy())
+    theme = data.get("theme", default_theme(language))
     field = data.get("editing_field")
     if field not in FIELD_LABELS:
         await state.set_state(None)
-        await message.answer("Не выбран параметр. Открой конструктор заново.", reply_markup=main_menu())
+        await message.answer(tr(language, "field_not_selected"), reply_markup=main_menu(language))
         return
     theme[field] = color
     if field == "text":
@@ -1925,106 +2024,185 @@ async def set_color(message: Message, state: FSMContext):
     ensure_text_colors(theme)
     await state.set_state(None)
     await state.update_data(theme=theme)
-    await show_theme(message, theme, data.get("wallpaper_path"), prefix=f"{FIELD_LABELS[field]} изменён.\n\n", image_palette=data.get("image_palette"))
+    await show_theme(
+        message,
+        theme,
+        data.get("wallpaper_path"),
+        prefix=tr(language, "prefix_field_changed", field=field_label(language, field)),
+        image_palette=data.get("image_palette"),
+    )
+
+
 
 
 @dp.callback_query(F.data.startswith("opacity:"))
 async def choose_opacity(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
+    language = user_language(callback.from_user.id)
     field = callback.data.split(":", 1)[1]
     if field not in ("outgoing", "incoming"):
-        await callback.answer("Неизвестный параметр", show_alert=True)
+        await callback.answer(tr(language, "field_unknown"), show_alert=True)
         return
-    label = "моих сообщений" if field == "outgoing" else "входящих сообщений"
-    await callback.message.answer(f"Выбери прозрачность {label}. 100% — полностью непрозрачные, 50% — заметно просвечивают обои.", reply_markup=opacity_keyboard(field))
+    prompt = tr(language, "opacity_prompt_outgoing" if field == "outgoing" else "opacity_prompt_incoming")
+    prompt += " " + tr(language, "opacity_explainer")
+    await callback.message.answer(prompt, reply_markup=opacity_keyboard(language, field))
     await callback.answer()
+
+
 
 
 @dp.callback_query(F.data.startswith("opset:"))
 async def set_opacity(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     try:
         _, field, value = callback.data.split(":", 2)
         opacity = int(value)
     except (ValueError, TypeError):
-        await callback.answer("Некорректная прозрачность", show_alert=True)
+        await callback.answer(tr(language, "opacity_invalid"), show_alert=True)
         return
     if field not in ("outgoing", "incoming") or opacity not in (20, 30, 40, 50, 60, 70, 80, 90, 100):
-        await callback.answer("Некорректная прозрачность", show_alert=True)
+        await callback.answer(tr(language, "opacity_invalid"), show_alert=True)
         return
     data = await state.get_data()
-    theme = data.get("theme", DEFAULT_THEME.copy())
+    theme = data.get("theme", default_theme(language))
     theme[f"{field}_opacity"] = opacity
     ensure_text_colors(theme)
     await state.set_state(None)
     await state.update_data(theme=theme)
-    await show_theme(callback.message, theme, data.get("wallpaper_path"), prefix="Прозрачность обновлена.\n\n", image_palette=data.get("image_palette"))
+    await show_theme(
+        callback.message,
+        theme,
+        data.get("wallpaper_path"),
+        prefix=tr(language, "prefix_opacity"),
+        image_palette=data.get("image_palette"),
+        language=language,
+    )
     await callback.answer()
+
+
 
 
 @dp.callback_query(F.data == "rename")
 async def rename_start(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     await state.set_state(ThemeStates.waiting_name)
-    await callback.message.answer("Напиши название темы. Например: Sakura Evening")
+    await callback.message.answer(tr(language, "rename_prompt"))
     await callback.answer()
 
 
 @dp.message(ThemeStates.waiting_name)
 async def rename_theme(message: Message, state: FSMContext):
+    language = user_language(message.from_user.id)
     name = (message.text or "").strip()
     if not name or len(name) > 48:
-        await message.answer("Название должно содержать от 1 до 48 символов.")
+        await message.answer(tr(language, "name_invalid"))
         return
     data = await state.get_data()
-    theme = data.get("theme", DEFAULT_THEME.copy())
+    theme = data.get("theme", default_theme(language))
     theme["name"] = name
     await state.set_state(None)
     await state.update_data(theme=theme)
-    await show_theme(message, theme, data.get("wallpaper_path"), prefix="Название сохранено.\n\n", image_palette=data.get("image_palette"))
+    await show_theme(
+        message,
+        theme,
+        data.get("wallpaper_path"),
+        prefix=tr(language, "name_saved"),
+        image_palette=data.get("image_palette"),
+    )
+
+
 
 
 @dp.callback_query(F.data == "reset")
 async def reset_theme(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     await state.set_state(None)
     data = await state.get_data()
-    old_theme = data.get("theme", DEFAULT_THEME.copy())
+    old_theme = data.get("theme", default_theme(language))
     original_photo_theme = data.get("photo_theme_original")
     if data.get("image_palette") and original_photo_theme:
         fresh = original_photo_theme.copy()
     else:
-        fresh = DEFAULT_THEME.copy()
-    fresh["name"] = old_theme.get("name", fresh.get("name", "Моя тема"))
-    # "Reset colors" does not silently reset the user's opacity controls.
+        fresh = default_theme(language)
+    fresh["name"] = old_theme.get("name", fresh.get("name", tr(language, "default_theme_name")))
+    # Resetting colours does not silently reset the opacity controls.
     fresh["outgoing_opacity"] = old_theme.get("outgoing_opacity", fresh.get("outgoing_opacity", 100))
     fresh["incoming_opacity"] = old_theme.get("incoming_opacity", fresh.get("incoming_opacity", 100))
     ensure_text_colors(fresh)
     await state.update_data(theme=fresh)
-    await show_theme(callback.message, fresh, data.get("wallpaper_path"), prefix="Цвета возвращены к исходному варианту. Обои, название и прозрачность сохранены.\n\n", image_palette=data.get("image_palette"))
+    await show_theme(
+        callback.message,
+        fresh,
+        data.get("wallpaper_path"),
+        prefix=tr(language, "prefix_reset"),
+        image_palette=data.get("image_palette"),
+        language=language,
+    )
     await callback.answer()
 
 
-async def show_catalog(message: Message):
+
+
+async def show_catalog(message: Message, language: str | None = None):
+    language = language or user_language(message.from_user.id)
     items = load_catalog()
-    buttons = [[InlineKeyboardButton(text=f"{item['name']} — {item['description']}", callback_data=f"preset:{item['id']}")] for item in items]
-    buttons.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")])
-    await message.answer("Выбери готовую тему:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    catalog_translations = {
+        "midnight": ("Midnight", "Cool dark palette"),
+        "sakura": ("Sakura", "Soft pink shades"),
+        "moss": ("Moss", "Calm green shades"),
+        "lavender": ("Lavender", "Light lilac palette"),
+        "ember": ("Ember", "Warm dark palette"),
+    }
+    buttons = []
+    for item in items:
+        name = item["name"]
+        description = item["description"]
+        if language == "en":
+            name, description = catalog_translations.get(
+                item.get("id"), (name, description)
+            )
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{name} — {description}",
+                callback_data=f"preset:{item['id']}",
+            )
+        ])
+    buttons.append([InlineKeyboardButton(text=tr(language, "home"), callback_data="home")])
+    await message.answer(
+        tr(language, "catalog_prompt"),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
+
+
 
 
 @dp.callback_query(F.data == "catalog")
 async def catalog_callback(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
-    await show_catalog(callback.message)
+    language = user_language(callback.from_user.id)
+    await show_catalog(callback.message, language)
     await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("preset:"))
 async def use_preset(callback: CallbackQuery, state: FSMContext):
+    language = user_language(callback.from_user.id)
     key = callback.data.split(":", 1)[1]
     preset = next((item for item in load_catalog() if item.get("id") == key), None)
     if not preset:
-        await callback.answer("Тема не найдена", show_alert=True)
+        await callback.answer(tr(language, "catalog_not_found"), show_alert=True)
         return
-    theme = DEFAULT_THEME.copy()
+    theme = default_theme(language)
     theme.update({k: v for k, v in preset.items() if k in theme})
+    if language == "en":
+        preset_names = {
+            "midnight": "Midnight",
+            "sakura": "Sakura",
+            "moss": "Moss",
+            "lavender": "Lavender",
+            "ember": "Ember",
+        }
+        theme["name"] = preset_names.get(key, theme.get("name", "My theme"))
     # Explicit palette values must not be replaced by automatic text generation.
     theme["text_auto"] = "text" not in preset
     theme["message_text_auto"] = "message_text" not in preset
@@ -2032,38 +2210,60 @@ async def use_preset(callback: CallbackQuery, state: FSMContext):
     ensure_text_colors(theme)
     await state.clear()
     await state.update_data(theme=theme, wallpaper_path=None)
-    await show_theme(callback.message, theme, prefix="Готовая тема выбрана.\n\n")
+    await show_theme(callback.message, theme, prefix=tr(language, "prefix_preset"), language=language)
     await callback.answer()
+
+
 
 
 @dp.callback_query(F.data == "export_menu")
 async def export_menu(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
-    await callback.message.answer("Выбери приложение, для которого нужен файл темы:", reply_markup=export_keyboard())
+    language = user_language(callback.from_user.id)
+    await callback.message.answer(
+        tr(language, "export_prompt"),
+        reply_markup=export_keyboard(language),
+    )
     await callback.answer()
 
 
 @dp.callback_query(F.data == "export:other")
 async def export_other(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
-    await callback.message.answer("Дополнительные форматы:", reply_markup=other_export_keyboard())
+    language = user_language(callback.from_user.id)
+    await callback.message.answer(
+        tr(language, "export_more"),
+        reply_markup=other_export_keyboard(language),
+    )
     await callback.answer()
+
+
 
 
 @dp.callback_query(F.data == "back_theme")
 async def back_theme(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
+    language = user_language(callback.from_user.id)
     data = await state.get_data()
-    theme = data.get("theme", DEFAULT_THEME.copy())
-    await show_theme(callback.message, theme, data.get("wallpaper_path"), image_palette=data.get("image_palette"))
+    theme = data.get("theme", default_theme(language))
+    await show_theme(
+        callback.message,
+        theme,
+        data.get("wallpaper_path"),
+        image_palette=data.get("image_palette"),
+        language=language,
+    )
     await callback.answer()
+
+
 
 
 @dp.callback_query(F.data.startswith("export:"))
 async def export_platform(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
+    language = user_language(callback.from_user.id)
     data = await state.get_data()
-    theme = data.get("theme", DEFAULT_THEME.copy())
+    theme = data.get("theme", default_theme(language))
     ensure_text_colors(theme)
     wallpaper_value = data.get("wallpaper_path")
     wallpaper = Path(wallpaper_value) if wallpaper_value and Path(wallpaper_value).exists() else None
@@ -2076,34 +2276,33 @@ async def export_platform(callback: CallbackQuery, state: FSMContext):
     if platform == "windows":
         payload = create_desktop_theme(theme, wallpaper)
         filename = f"{name}.tdesktop-theme"
-        caption = "<b>Telegram Desktop для Windows</b>\nОткрой файл в приложении Telegram Desktop и подтверди применение."
+        caption = tr(language, "export_windows")
         if wallpaper:
-            caption += "\nИзображение включено в файл темы."
+            caption += "\n" + tr(language, "wallpaper_embedded")
     elif platform == "desktop_palette":
         payload = desktop_palette_text(theme)
         filename = f"{name}.tdesktop-palette"
-        caption = "<b>Палитра Telegram Desktop</b>\nНастройки → Chat Settings → Edit theme → меню ⋮ → Import theme."
-        caption += "\nЭтот формат импортируется через редактор, а не открывается как готовая тема двойным щелчком."
+        caption = tr(language, "export_desktop_palette")
     elif platform == "android":
         payload = create_android_theme(theme, wallpaper)
         filename = f"{name}.attheme"
-        caption = "<b>Telegram для Android</b>\nОткрой файл в Telegram на телефоне и выбери применение темы."
+        caption = tr(language, "export_android")
         if wallpaper:
-            caption += "\nИзображение включено в файл темы."
+            caption += "\n" + tr(language, "wallpaper_embedded")
     elif platform == "ios":
         payload = create_ios_theme(theme)
         filename = f"{name}.tgios-theme"
-        caption = "<b>Telegram для iPhone / iOS</b>\nОтправь файл в «Избранное», открой его на iPhone и выбери Apply Theme. Фото-обои в этот формат не встраиваются; цвета интерфейса сохраняются."
+        caption = tr(language, "export_ios")
     elif platform == "macos":
         payload = create_macos_palette(theme)
         filename = f"{name}.palette"
-        caption = "<b>Telegram для macOS</b>\nСоздана нативная текстовая палитра .palette. Фото-обои в этот формат не встраиваются; после импорта проверь основные экраны в клиенте macOS."
+        caption = tr(language, "export_macos")
     elif platform == "tgx":
         payload = create_tgx_theme(theme)
         filename = f"{name}.tgx-theme"
-        caption = "<b>Telegram X для Android</b>\nОткрой файл в Telegram X и выбери применение темы. Фото-обои в этот формат пока не встраиваются."
+        caption = tr(language, "export_tgx")
     else:
-        await callback.answer("Неизвестный формат", show_alert=True)
+        await callback.answer(tr(language, "unknown_format"), show_alert=True)
         return
 
     await callback.message.answer_document(
@@ -2111,7 +2310,7 @@ async def export_platform(callback: CallbackQuery, state: FSMContext):
         caption=caption,
         parse_mode=ParseMode.HTML,
     )
-    await callback.answer("Файл темы готов")
+    await callback.answer(tr(language, "file_ready"))
 
 
 INSTANCE_LOCK_HANDLE = None
