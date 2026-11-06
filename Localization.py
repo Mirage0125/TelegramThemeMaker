@@ -6,6 +6,7 @@ editor resets, bot restarts, and automatic project updates.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 
@@ -18,7 +19,7 @@ class LanguagePreferences:
     def __init__(self, database_path: str | Path):
         self.database_path = Path(database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.database_path, timeout=10) as connection:
+        with closing(sqlite3.connect(self.database_path, timeout=10)) as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS user_languages (
@@ -30,7 +31,7 @@ class LanguagePreferences:
             connection.commit()
 
     def get_language(self, user_id: int) -> str:
-        with sqlite3.connect(self.database_path, timeout=10) as connection:
+        with closing(sqlite3.connect(self.database_path, timeout=10)) as connection:
             row = connection.execute(
                 "SELECT language FROM user_languages WHERE user_id = ?",
                 (int(user_id),),
@@ -40,7 +41,7 @@ class LanguagePreferences:
     def set_language(self, user_id: int, language: str) -> None:
         if language not in SUPPORTED_LANGUAGES:
             raise ValueError(f"Unsupported language: {language!r}")
-        with sqlite3.connect(self.database_path, timeout=10) as connection:
+        with closing(sqlite3.connect(self.database_path, timeout=10)) as connection:
             connection.execute(
                 """
                 INSERT INTO user_languages (user_id, language)
