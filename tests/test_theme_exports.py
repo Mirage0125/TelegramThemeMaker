@@ -181,5 +181,68 @@ class ThemeExportTests(unittest.TestCase):
             finally:
                 bot.USER_DATA = original_user_data
 
+    def test_download_progress_updates_during_transfer(self):
+        class FakeMessage:
+            def __init__(self):
+                self.edits = []
+
+            async def edit_text(self, text, **kwargs):
+                self.edits.append(text)
+
+        async def exercise():
+            progress_message = FakeMessage()
+
+            async def fake_download(report):
+                for percent in (20, 40, 60, 80, 100):
+                    report(percent)
+                    await asyncio.sleep(0)
+                return b"photo-bytes"
+
+            result = await bot.download_with_progress(progress_message, "en", fake_download)
+            return result, progress_message.edits
+
+        result, edits = asyncio.run(exercise())
+        self.assertEqual(result, b"photo-bytes")
+        self.assertIn("Loading: 9%", "\\n".join(edits))
+        self.assertIn("Loading: 27%", "\\n".join(edits))
+        self.assertIn("Loading: 30%", "\\n".join(edits))
+
+
+    def test_photo_preparation_progress_is_relayed_from_worker(self):
+        stream = io.BytesIO()
+        Image.new("RGB", (640, 480), "#456789").save(stream, format="PNG")
+
+        class FakeMessage:
+            def __init__(self):
+                self.edits = []
+
+            async def edit_text(self, text, **kwargs):
+                self.edits.append(text)
+
+        async def exercise(directory):
+            original_user_data = bot.USER_DATA
+            bot.USER_DATA = Path(directory)
+            progress_message = FakeMessage()
+            try:
+                palette, wallpaper = await bot.prepare_photo_assets_with_progress(
+                    505,
+                    stream.getvalue(),
+                    progress_message,
+                    "en",
+                )
+                return palette, wallpaper, progress_message.edits
+            finally:
+                bot.USER_DATA = original_user_data
+
+        with tempfile.TemporaryDirectory() as directory:
+            palette, wallpaper, edits = asyncio.run(exercise(directory))
+            self.assertTrue(palette)
+            self.assertTrue(wallpaper.is_file())
+            joined = "\\n".join(edits)
+            self.assertIn("42%", joined)
+            self.assertIn("64%", joined)
+            self.assertIn("76%", joined)
+
+
 if __name__ == "__main__":
     unittest.main()
