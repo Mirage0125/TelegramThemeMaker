@@ -1990,7 +1990,9 @@ async def image_upload(message: Message, state: FSMContext, bot: Bot):
             lambda report: download_telegram_image(message, bot, report),
         )
         await apply_image_to_theme(message, state, raw, progress_message)
-    except (ValueError, UnidentifiedImageError, Image.DecompressionBombError, OSError) as exc:
+    except Exception as exc:
+        # Catch Telegram transport errors too, so the user never sees a frozen progress message.
+        print(f"Ошибка загрузки/обработки фотографии: {exc}")
         try:
             await progress_message.edit_text(
                 tr(language, "photo_progress_error", error=html.escape(str(exc))),
@@ -2019,7 +2021,8 @@ async def image_url(message: Message, state: FSMContext):
             lambda report: safe_download_image(url, report),
         )
         await apply_image_to_theme(message, state, raw, progress_message)
-    except (ValueError, aiohttp.ClientError, asyncio.TimeoutError, UnidentifiedImageError, Image.DecompressionBombError, OSError) as exc:
+    except Exception as exc:
+        print(f"Ошибка загрузки фотографии по ссылке: {exc}")
         try:
             await progress_message.edit_text(
                 tr(language, "photo_progress_error", error=html.escape(str(exc))),
