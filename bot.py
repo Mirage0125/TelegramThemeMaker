@@ -16,6 +16,7 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramEntityTooLarge, TelegramNetworkError, TelegramServerError
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -49,6 +50,8 @@ except OSError:
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 TELEGRAM_GET_FILE_TIMEOUT = 120
 TELEGRAM_DOWNLOAD_TIMEOUT = 180
+TELEGRAM_REQUEST_ATTEMPTS = 3
+TELEGRAM_RETRY_BASE_DELAY = 1.0
 MAX_IMAGE_SIDE = 1920
 PALETTE_IMAGE_SIDE = 320
 Image.MAX_IMAGE_PIXELS = 25_000_000
@@ -1745,34 +1748,61 @@ async def safe_download_image(url: str, progress_callback=None) -> bytes:
     raise ValueError("Слишком много перенаправлений. Скачай изображение и отправь его файлом.")
 
 
+async def retry_telegram_operation(operation, operation_name: str):
+    """Retry temporary Telegram 5xx/network failures with a short exponential backoff."""
+    for attempt in range(1, TELEGRAM_REQUEST_ATTEMPTS + 1):
+        try:
+            return await operation()
+        except TelegramEntityTooLarge:
+            # A size rejection is permanent; retrying the same file cannot help.
+            raise
+        except (TelegramServerError, TelegramNetworkError, asyncio.TimeoutError) as exc:
+            if attempt >= TELEGRAM_REQUEST_ATTEMPTS:
+                raise
+            delay = TELEGRAM_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            print(
+                f"Временная ошибка Telegram при {operation_name} "
+                f"(попытка {attempt}/{TELEGRAM_REQUEST_ATTEMPTS}): {exc}. "
+                f"Повтор через {delay:g} сек."
+            )
+            await asyncio.sleep(delay)
+
+
 async def download_telegram_image(message: Message, bot: Bot, progress_callback=None) -> bytes:
     if message.photo:
-        file_obj = await bot.get_file(
-            message.photo[-1].file_id,
-            request_timeout=TELEGRAM_GET_FILE_TIMEOUT,
-        )
+        file_id = message.photo[-1].file_id
     elif message.document:
         doc = message.document
         if not doc.mime_type or not doc.mime_type.startswith("image/"):
             raise ValueError("Это не изображение. Отправь JPG, PNG или WebP.")
         if doc.file_size and doc.file_size > MAX_IMAGE_BYTES:
             raise ValueError("Изображение больше 12 МБ.")
-        file_obj = await bot.get_file(
-            doc.file_id,
-            request_timeout=TELEGRAM_GET_FILE_TIMEOUT,
-        )
+        file_id = doc.file_id
     else:
         raise ValueError("Отправь картинку как фото или как файл.")
 
+    file_obj = await retry_telegram_operation(
+        lambda: bot.get_file(
+            file_id,
+            request_timeout=TELEGRAM_GET_FILE_TIMEOUT,
+        ),
+        "получении сведений о файле",
+    )
+
     if file_obj.file_size and file_obj.file_size > MAX_IMAGE_BYTES:
         raise ValueError("Изображение больше 12 МБ.")
-    buffer = ProgressBytesIO(file_obj.file_size, progress_callback)
-    await bot.download_file(
-        file_obj.file_path,
-        destination=buffer,
-        timeout=TELEGRAM_DOWNLOAD_TIMEOUT,
-    )
-    return buffer.getvalue()
+
+    async def download_once():
+        # Use a fresh buffer for every attempt so a partial failed download is discarded.
+        buffer = ProgressBytesIO(file_obj.file_size, progress_callback)
+        await bot.download_file(
+            file_obj.file_path,
+            destination=buffer,
+            timeout=TELEGRAM_DOWNLOAD_TIMEOUT,
+        )
+        return buffer.getvalue()
+
+    return await retry_telegram_operation(download_once, "скачивании фотографии")
 
 
 async def show_theme(
