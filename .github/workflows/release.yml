@@ -55,6 +55,7 @@ jobs:
           rsync -a ./ dist/TelegramThemeMaker/ \
             --exclude='.git/' \
             --exclude='.github/' \
+            --exclude='/tests/' \
             --exclude='/assets/' \
             --exclude='.env' \
             --exclude='.env.*' \
