@@ -402,7 +402,7 @@ def _save_user_wallpaper_image(user_id: int, image: Image.Image) -> Path:
     user_dir.mkdir(parents=True, exist_ok=True)
     # Each theme gets its own file: a later upload must not mutate an older active theme.
     dest = user_dir / f"wallpaper_{uuid.uuid4().hex[:12]}.jpg"
-    image.save(dest, "JPEG", quality=87, progressive=True)
+    image.save(dest, "JPEG", quality=87)
     return dest
 
 
