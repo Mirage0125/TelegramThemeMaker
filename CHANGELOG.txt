@@ -1,3 +1,11 @@
+TELEGRAM THEME MAKER 3.8.0
+==========================
+- Added local SQLite-backed FSM storage so unfinished editor sessions survive restarts.
+- Acquired the installation lock before checking or applying automatic updates.
+- Preserved the entire user-owned assets directory during updates.
+- Added Windows installation diagnostics and cross-platform regression tests.
+- Required SQLiteStorage.py in every update archive.
+
 TELEGRAM THEME MAKER 3.7.3\n==========================\n- Fixed garbled Russian diagnostic messages in RunHidden.vbs by making its source ASCII-only.\n- Autostart log messages are now English-only and remain readable regardless of the Windows script-host code page.\n\nTELEGRAM THEME MAKER 3.7.2
 ==========================
 - Исправлен фоновый запуск: временная ошибка GitHub при проверке обновлений больше не останавливает бота.

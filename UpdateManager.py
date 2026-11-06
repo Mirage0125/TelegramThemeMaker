@@ -36,9 +36,11 @@ PRESERVED_ROOT_ITEMS = {
     "user_data",
     ".bot.lock",
     ".update-state.json",
+    # User-owned images and other local assets must never be replaced by auto-updates.
+    "assets",
     "__pycache__",
 }
-REQUIRED_FILES = {"bot.py", "BackgroundRunner.py", "UpdateManager.py", "VERSION.txt", "requirements.txt"}
+REQUIRED_FILES = {"bot.py", "BackgroundRunner.py", "UpdateManager.py", "SQLiteStorage.py", "VERSION.txt", "requirements.txt"}
 VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 
 
@@ -238,7 +240,7 @@ def _install_requirements(root: Path, log) -> None:
         raise UpdateError("Не удалось обновить библиотеки: " + detail)
 
 
-def apply_update_if_available(root: Path, log) -> bool:
+def _apply_update_if_available_locked(root: Path, log) -> bool:
     """Check for a newer stable release and install it. Return True if updated."""
     root = root.resolve()
     state_path = root / ".update-state.json"
@@ -326,3 +328,26 @@ def apply_update_if_available(root: Path, log) -> bool:
         return False
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+
+def apply_update_if_available(root: Path, log) -> bool:
+    """Run the updater under the installation lock, including older launchers."""
+    root = root.resolve()
+    if os.environ.get("THEME_MAKER_RUNNER_LOCK_HELD") == "1":
+        return _apply_update_if_available_locked(root, log)
+
+    # Compatibility for installations that still have the previous
+    # BackgroundRunner.py: it did not acquire the lock before calling the updater.
+    from BackgroundRunner import AlreadyRunningError, acquire_instance_lock
+
+    try:
+        lock_handle = acquire_instance_lock(root / ".bot.lock")
+    except AlreadyRunningError:
+        _log(log, "Другой процесс уже использует эту установку; проверку обновлений пропускаю.")
+        return False
+
+    try:
+        return _apply_update_if_available_locked(root, log)
+    finally:
+        lock_handle.close()
