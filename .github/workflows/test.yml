@@ -40,5 +40,16 @@ jobs:
       - name: Validate Python syntax
         run: python -m compileall -q bot.py BackgroundRunner.py UpdateManager.py SQLiteStorage.py tests
 
+      - name: Validate PowerShell diagnostic script
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$env:GITHUB_WORKSPACE/Check-Install.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | Format-List
+            exit 1
+          }
+
       - name: Run regression tests
         run: python -m unittest discover -s tests -v
