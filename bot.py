@@ -2228,8 +2228,9 @@ async def export_other(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "back_theme")
 async def back_theme(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
+    language = user_language(callback.from_user.id)
     data = await state.get_data()
-    theme = data.get("theme", DEFAULT_THEME.copy())
+    theme = data.get("theme", default_theme(language))
     await show_theme(callback.message, theme, data.get("wallpaper_path"), image_palette=data.get("image_palette"))
     await callback.answer()
 
@@ -2237,8 +2238,9 @@ async def back_theme(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("export:"))
 async def export_platform(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
+    language = user_language(callback.from_user.id)
     data = await state.get_data()
-    theme = data.get("theme", DEFAULT_THEME.copy())
+    theme = data.get("theme", default_theme(language))
     ensure_text_colors(theme)
     wallpaper_value = data.get("wallpaper_path")
     wallpaper = Path(wallpaper_value) if wallpaper_value and Path(wallpaper_value).exists() else None
@@ -2251,34 +2253,33 @@ async def export_platform(callback: CallbackQuery, state: FSMContext):
     if platform == "windows":
         payload = create_desktop_theme(theme, wallpaper)
         filename = f"{name}.tdesktop-theme"
-        caption = "<b>Telegram Desktop для Windows</b>\nОткрой файл в приложении Telegram Desktop и подтверди применение."
+        caption = tr(language, "export_windows")
         if wallpaper:
-            caption += "\nИзображение включено в файл темы."
+            caption += "\n" + tr(language, "wallpaper_embedded")
     elif platform == "desktop_palette":
         payload = desktop_palette_text(theme)
         filename = f"{name}.tdesktop-palette"
-        caption = "<b>Палитра Telegram Desktop</b>\nНастройки → Chat Settings → Edit theme → меню ⋮ → Import theme."
-        caption += "\nЭтот формат импортируется через редактор, а не открывается как готовая тема двойным щелчком."
+        caption = tr(language, "export_desktop_palette")
     elif platform == "android":
         payload = create_android_theme(theme, wallpaper)
         filename = f"{name}.attheme"
-        caption = "<b>Telegram для Android</b>\nОткрой файл в Telegram на телефоне и выбери применение темы."
+        caption = tr(language, "export_android")
         if wallpaper:
-            caption += "\nИзображение включено в файл темы."
+            caption += "\n" + tr(language, "wallpaper_embedded")
     elif platform == "ios":
         payload = create_ios_theme(theme)
         filename = f"{name}.tgios-theme"
-        caption = "<b>Telegram для iPhone / iOS</b>\nОтправь файл в «Избранное», открой его на iPhone и выбери Apply Theme. Фото-обои в этот формат не встраиваются; цвета интерфейса сохраняются."
+        caption = tr(language, "export_ios")
     elif platform == "macos":
         payload = create_macos_palette(theme)
         filename = f"{name}.palette"
-        caption = "<b>Telegram для macOS</b>\nСоздана нативная текстовая палитра .palette. Фото-обои в этот формат не встраиваются; после импорта проверь основные экраны в клиенте macOS."
+        caption = tr(language, "export_macos")
     elif platform == "tgx":
         payload = create_tgx_theme(theme)
         filename = f"{name}.tgx-theme"
-        caption = "<b>Telegram X для Android</b>\nОткрой файл в Telegram X и выбери применение темы. Фото-обои в этот формат пока не встраиваются."
+        caption = tr(language, "export_tgx")
     else:
-        await callback.answer("Неизвестный формат", show_alert=True)
+        await callback.answer(tr(language, "unknown_format"), show_alert=True)
         return
 
     await callback.message.answer_document(
@@ -2286,7 +2287,7 @@ async def export_platform(callback: CallbackQuery, state: FSMContext):
         caption=caption,
         parse_mode=ParseMode.HTML,
     )
-    await callback.answer("Файл темы готов")
+    await callback.answer(tr(language, "file_ready"))
 
 
 INSTANCE_LOCK_HANDLE = None
