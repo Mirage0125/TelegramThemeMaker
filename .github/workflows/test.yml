@@ -38,7 +38,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
       - name: Validate Python syntax
-        run: python -m compileall -q bot.py BackgroundRunner.py UpdateManager.py SQLiteStorage.py tests
+        run: python -m compileall -q bot.py BackgroundRunner.py UpdateManager.py SQLiteStorage.py Localization.py tests
 
       - name: Validate PowerShell diagnostic script
         shell: pwsh
