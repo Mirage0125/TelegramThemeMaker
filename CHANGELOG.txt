@@ -1,5 +1,6 @@
 TELEGRAM THEME MAKER 3.8.0
 ==========================
+- Release ZIPs no longer contain the user-owned assets directory. The bundled welcome image is shipped under defaults/ and is only used when no local assets/welcome.png exists.
 - Added local SQLite-backed FSM storage so unfinished editor sessions survive restarts.
 - Acquired the installation lock before checking or applying automatic updates.
 - Preserved the entire user-owned assets directory during updates.
