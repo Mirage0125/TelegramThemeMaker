@@ -32,6 +32,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 from dotenv import load_dotenv
 
 from SQLiteStorage import SQLiteStorage
+from Localization import LanguagePreferences, text as tr
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
@@ -51,6 +52,16 @@ Image.MAX_IMAGE_PIXELS = 25_000_000
 
 if not TOKEN or TOKEN == "PASTE_YOUR_BOT_TOKEN_HERE":
     raise SystemExit("Не найден токен. Открой .env, вставь токен от @BotFather и перезапусти Start.bat.")
+
+LANGUAGE_PREFERENCES = LanguagePreferences(USER_DATA / "languages.sqlite3")
+
+def user_language(user_id: int) -> str:
+    return LANGUAGE_PREFERENCES.get_language(user_id)
+
+def default_theme(language: str = "ru") -> dict:
+    theme = DEFAULT_THEME.copy()
+    theme["name"] = tr(language, "default_theme_name")
+    return theme
 
 dp = Dispatcher(
     storage=SQLiteStorage(USER_DATA / "fsm.sqlite3"),
@@ -137,82 +148,112 @@ def load_catalog():
         return []
 
 
-def main_menu():
+def language_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang:ru"),
+        InlineKeyboardButton(text="🇬🇧 English", callback_data="lang:en"),
+    ]])
+
+
+def main_menu(language: str = "ru"):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🖼 Создать тему из фото", callback_data="image")],
-        [InlineKeyboardButton(text="🎨 Собрать тему вручную", callback_data="create")],
-        [InlineKeyboardButton(text="📚 Готовые темы", callback_data="catalog")],
-        [InlineKeyboardButton(text="❔ Как установить тему", callback_data="help")],
+        [InlineKeyboardButton(text=tr(language, "menu_photo"), callback_data="image")],
+        [InlineKeyboardButton(text=tr(language, "menu_manual"), callback_data="create")],
+        [InlineKeyboardButton(text=tr(language, "menu_catalog"), callback_data="catalog")],
+        [InlineKeyboardButton(text=tr(language, "menu_help"), callback_data="help")],
+        [InlineKeyboardButton(text=tr(language, "language_button"), callback_data="language")],
     ])
 
 
-def theme_keyboard(has_image_palette: bool = False):
+def field_label(language: str, field: str) -> str:
+    return tr(language, f"field_{field}")
+
+
+def field_help(language: str, field: str) -> str:
+    return tr(language, f"field_{field}_help")
+
+
+def color_button_labels(language: str):
+    if language == "en":
+        keys = [
+            ("color_black", "black"), ("color_white", "white"), ("color_gray", "gray"),
+            ("color_red", "red"), ("color_orange", "orange"), ("color_yellow", "yellow"),
+            ("color_green", "green"), ("color_blue", "blue"), ("color_lightblue", "lightblue"),
+            ("color_cyan", "cyan"), ("color_purple", "purple"), ("color_pink", "pink"),
+        ]
+        return [(tr(language, key), value) for key, value in keys]
+    return COLOR_BUTTONS
+
+
+def theme_keyboard(language: str = "ru", has_image_palette: bool = False):
     rows = [
-        [InlineKeyboardButton(text="Основной цвет", callback_data="field:background"),
-         InlineKeyboardButton(text="Акцент", callback_data="field:accent")],
-        [InlineKeyboardButton(text="Мои сообщения", callback_data="field:outgoing"),
-         InlineKeyboardButton(text="Входящие сообщения", callback_data="field:incoming")],
-        [InlineKeyboardButton(text="Основной текст", callback_data="field:text"),
-         InlineKeyboardButton(text="Текст сообщений", callback_data="field:message_text")],
-        [InlineKeyboardButton(text="Прозрачность моих сообщений", callback_data="opacity:outgoing"),
-         InlineKeyboardButton(text="Прозрачность входящих", callback_data="opacity:incoming")],
-        [InlineKeyboardButton(text="✏️ Название темы", callback_data="rename"),
-         InlineKeyboardButton(text="↺ Сбросить цвета", callback_data="reset")],
+        [InlineKeyboardButton(text=field_label(language, "background"), callback_data="field:background"),
+         InlineKeyboardButton(text=field_label(language, "accent"), callback_data="field:accent")],
+        [InlineKeyboardButton(text=field_label(language, "outgoing"), callback_data="field:outgoing"),
+         InlineKeyboardButton(text=field_label(language, "incoming"), callback_data="field:incoming")],
+        [InlineKeyboardButton(text=field_label(language, "text"), callback_data="field:text"),
+         InlineKeyboardButton(text=field_label(language, "message_text"), callback_data="field:message_text")],
+        [InlineKeyboardButton(text=tr(language, "opacity_outgoing"), callback_data="opacity:outgoing"),
+         InlineKeyboardButton(text=tr(language, "opacity_incoming"), callback_data="opacity:incoming")],
+        [InlineKeyboardButton(text=tr(language, "rename"), callback_data="rename"),
+         InlineKeyboardButton(text=tr(language, "reset"), callback_data="reset")],
     ]
     if has_image_palette:
-        rows.append([InlineKeyboardButton(text="🎲 Перемешать цвета", callback_data="shuffle_palette")])
+        rows.append([InlineKeyboardButton(text=tr(language, "shuffle"), callback_data="shuffle_palette")])
     rows.extend([
-        [InlineKeyboardButton(text="📦 Экспортировать тему", callback_data="export_menu")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")],
+        [InlineKeyboardButton(text=tr(language, "export"), callback_data="export_menu")],
+        [InlineKeyboardButton(text=tr(language, "home"), callback_data="home")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def color_choice_keyboard(field: str, image_palette: list[str] | None = None):
+def color_choice_keyboard(language: str, field: str, image_palette: list[str] | None = None):
     rows = []
     if image_palette:
-        # In photo mode, offer only real colors extracted from the uploaded image.
         palette = list(dict.fromkeys(color for color in image_palette if parse_color(color)))[:8]
         for i in range(0, len(palette), 2):
             rows.append([
                 InlineKeyboardButton(text=color, callback_data=f"csethex:{field}:{color.lstrip('#')}")
                 for color in palette[i:i + 2]
             ])
-        rows.append([InlineKeyboardButton(text="🎲 Перемешать цвета", callback_data="shuffle_palette")])
-        rows.append([InlineKeyboardButton(text="✏️ Ввести свой HEX", callback_data=f"custom:{field}")])
+        rows.append([InlineKeyboardButton(text=tr(language, "shuffle"), callback_data="shuffle_palette")])
+        rows.append([InlineKeyboardButton(text=tr(language, "custom_hex"), callback_data=f"custom:{field}")])
     else:
-        for i in range(0, len(COLOR_BUTTONS), 3):
-            row = [InlineKeyboardButton(text=label, callback_data=f"cset:{field}:{key}") for label, key in COLOR_BUTTONS[i:i + 3]]
-            rows.append(row)
-        rows.append([InlineKeyboardButton(text="✏️ Ввести название или HEX", callback_data=f"custom:{field}")])
-    rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data="back_theme")])
+        buttons = color_button_labels(language)
+        for i in range(0, len(buttons), 3):
+            rows.append([
+                InlineKeyboardButton(text=label, callback_data=f"cset:{field}:{key}")
+                for label, key in buttons[i:i + 3]
+            ])
+        rows.append([InlineKeyboardButton(text=tr(language, "custom_color"), callback_data=f"custom:{field}")])
+    rows.append([InlineKeyboardButton(text=tr(language, "back"), callback_data="back_theme")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def opacity_keyboard(field: str):
+def opacity_keyboard(language: str, field: str):
     rows = []
     for pair in ((100, 90, 80), (70, 60, 50), (40, 30, 20)):
         rows.append([InlineKeyboardButton(text=f"{value}%", callback_data=f"opset:{field}:{value}") for value in pair])
-    rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data="back_theme")])
+    rows.append([InlineKeyboardButton(text=tr(language, "back"), callback_data="back_theme")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def export_keyboard():
+def export_keyboard(language: str):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🖥 Windows — .tdesktop-theme", callback_data="export:windows")],
         [InlineKeyboardButton(text="🤖 Android — .attheme", callback_data="export:android")],
         [InlineKeyboardButton(text="📱 iPhone — .tgios-theme", callback_data="export:ios")],
         [InlineKeyboardButton(text="🍎 macOS — .palette", callback_data="export:macos")],
-        [InlineKeyboardButton(text="Другие форматы…", callback_data="export:other")],
-        [InlineKeyboardButton(text="↩️ Назад к настройкам", callback_data="back_theme")],
+        [InlineKeyboardButton(text=tr(language, "export_other"), callback_data="export:other")],
+        [InlineKeyboardButton(text=tr(language, "back_export"), callback_data="back_theme")],
     ])
 
 
-def other_export_keyboard():
+def other_export_keyboard(language: str):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Telegram X — .tgx-theme", callback_data="export:tgx")],
         [InlineKeyboardButton(text="Desktop Editor — .tdesktop-palette", callback_data="export:desktop_palette")],
-        [InlineKeyboardButton(text="↩️ Назад", callback_data="export_menu")],
+        [InlineKeyboardButton(text=tr(language, "back"), callback_data="export_menu")],
     ])
 
 
@@ -1566,32 +1607,32 @@ async def show_theme(
     image_palette: list[str] | None = None,
 ):
     ensure_text_colors(theme)
+    language = user_language(message.from_user.id)
     preview = render_preview(theme, wallpaper_path, image_palette)
-    title = html.escape(str(theme.get("name", "Моя тема")))
-    image_note = "На макете показаны выбранные обои." if wallpaper_path else "Пока используется однотонный фон. Фото можно добавить через главное меню."
+    title = html.escape(str(theme.get("name", tr(language, "default_theme_name"))))
+    image_note = tr(language, "theme_wallpaper") if wallpaper_path else tr(language, "theme_solid")
     palette_note = ""
     if image_palette:
         palette_codes = " · ".join(f"<code>{html.escape(color)}</code>" for color in image_palette)
         palette_note = (
-            f"\n\n<b>Палитра из фото:</b> {palette_codes}\n"
-            "При настройке любого параметра можно выбрать один из этих оттенков. "
-            "Кнопка «Перемешать цвета» соберёт новое сочетание, не меняя фотографию."
+            f"\n\n<b>{tr(language, 'palette_note_title')}</b> {palette_codes}\n"
+            f"{tr(language, 'palette_note')}"
         )
     caption = (
         f"<b>{title}</b>\n\n"
         f"{html.escape(prefix)}{image_note}{palette_note}\n\n"
-        "<b>Что означает каждый пункт:</b>\n"
-        "• Основной цвет — панели и фон окон.\n"
-        "• Акцент — ссылки, кнопки, выделение, галочки и онлайн.\n"
-        "• Мои сообщения — фон твоих пузырей.\n"
-        "• Входящие — фон сообщений собеседников.\n"
-        "• Прозрачность — насколько видны обои сквозь пузыри.\n\n"
-        "Основной текст и текст сообщений можно менять отдельно. По умолчанию они выбираются автоматически по фону интерфейса и пузырей."
+        f"<b>{tr(language, 'theme_legend_title')}</b>\n"
+        f"{tr(language, 'legend_background')}\n"
+        f"{tr(language, 'legend_accent')}\n"
+        f"{tr(language, 'legend_outgoing')}\n"
+        f"{tr(language, 'legend_incoming')}\n"
+        f"{tr(language, 'legend_opacity')}\n\n"
+        f"{tr(language, 'theme_auto_text')}"
     )
     await message.answer_photo(
         BufferedInputFile(preview, filename="theme-preview.jpg"),
         caption=caption,
-        reply_markup=theme_keyboard(bool(image_palette)),
+        reply_markup=theme_keyboard(language, bool(image_palette)),
         parse_mode=ParseMode.HTML,
     )
 
@@ -1601,48 +1642,82 @@ def welcome_cover_path() -> Path:
     return COVER_PATH if COVER_PATH.is_file() else DEFAULT_COVER_PATH
 
 
-async def send_welcome(message: Message):
-    text = (
-        "<b>Theme Maker</b>\n"
-        "Создавай оформление Telegram по фотографии или вручную.\n\n"
-        "Загрузи картинку — бот подберёт цвета и добавит её как фон там, где формат поддерживает встроенные обои.\n"
-        "Перед экспортом ты увидишь наглядный макет чата, а не список непонятных цветовых кодов.\n\n"
-        "Выбери, с чего начнём:"
+async def send_language_prompt(message: Message):
+    await message.answer(
+        "<b>Добро пожаловать в Theme Maker!</b>\n\n"
+        "Сначала выбери язык интерфейса / First, choose your interface language:",
+        reply_markup=language_keyboard(),
+        parse_mode=ParseMode.HTML,
     )
-    # Preserve a user's customized local cover; fall back to the bundled default.
+
+
+async def send_welcome(message: Message, language: str | None = None):
+    language = language or user_language(message.from_user.id)
+    welcome_text = tr(language, "welcome")
     cover_path = welcome_cover_path()
     if cover_path.is_file():
         await message.answer_photo(
             BufferedInputFile(cover_path.read_bytes(), filename="theme-maker-welcome.png"),
-            caption=text, reply_markup=main_menu(), parse_mode=ParseMode.HTML,
+            caption=welcome_text, reply_markup=main_menu(language), parse_mode=ParseMode.HTML,
         )
     else:
-        await message.answer(text, reply_markup=main_menu(), parse_mode=ParseMode.HTML)
+        await message.answer(welcome_text, reply_markup=main_menu(language), parse_mode=ParseMode.HTML)
 
 
 async def set_user_commands(bot: Bot):
-    commands = [
-        BotCommand(command="start", description="Главное меню"),
-        BotCommand(command="create", description="Создать тему вручную"),
-        BotCommand(command="fromphoto", description="Создать тему из фото"),
-        BotCommand(command="catalog", description="Готовые темы"),
-        BotCommand(command="help", description="Помощь и установка тем"),
-        BotCommand(command="cancel", description="Отменить текущий шаг"),
-        BotCommand(command="version", description="Версия и обновления"),
-    ]
-    await bot.set_my_commands(commands)
-    try:
-        await bot.set_my_description("Создание тем Telegram из фотографий и вручную. Визуальный предпросмотр и файлы тем для разных клиентов Telegram.")
-        await bot.set_my_short_description("Создавай темы Telegram из фотографий и цветов.")
-    except Exception as exc:
-        print(f"Не удалось обновить описание бота (не критично): {exc}")
+    for language in ("ru", "en"):
+        command_texts = tr(language, "commands")
+        commands = [
+            BotCommand(command="start", description=command_texts["start"]),
+            BotCommand(command="create", description=command_texts["create"]),
+            BotCommand(command="fromphoto", description=command_texts["fromphoto"]),
+            BotCommand(command="catalog", description=command_texts["catalog"]),
+            BotCommand(command="help", description=command_texts["help"]),
+            BotCommand(command="cancel", description=command_texts["cancel"]),
+            BotCommand(command="version", description=command_texts["version"]),
+        ]
+        if language == "ru":
+            await bot.set_my_commands(commands)
+            await bot.set_my_description(tr(language, "bot_description"))
+            await bot.set_my_short_description(tr(language, "bot_short_description"))
+        else:
+            await bot.set_my_commands(commands, language_code="en")
+            await bot.set_my_description(tr(language, "bot_description"), language_code="en")
+            await bot.set_my_short_description(tr(language, "bot_short_description"), language_code="en")
 
 
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
     await state.clear()
-    await state.update_data(theme=DEFAULT_THEME.copy(), wallpaper_path=None)
-    await send_welcome(message)
+    language = user_language(message.from_user.id)
+    await state.update_data(theme=default_theme(language), wallpaper_path=None)
+    await send_language_prompt(message)
+
+
+@dp.callback_query(F.data == "language")
+async def language_menu(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(None)
+    language = user_language(callback.from_user.id)
+    await callback.message.answer(
+        tr(language, "choose_language"),
+        reply_markup=language_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("lang:"))
+async def select_language(callback: CallbackQuery, state: FSMContext):
+    language = callback.data.split(":", 1)[1]
+    if language not in ("ru", "en"):
+        await callback.answer("Unknown language", show_alert=True)
+        return
+    LANGUAGE_PREFERENCES.set_language(callback.from_user.id, language)
+    await state.clear()
+    await state.update_data(theme=default_theme(language), wallpaper_path=None)
+    await callback.message.edit_text(tr(language, "language_selected"))
+    await send_welcome(callback.message, language)
+    await callback.answer(tr(language, "language_saved"))
 
 
 @dp.message(Command("create"))
