@@ -1,0 +1,94 @@
+import asyncio
+import io
+import os
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+from PIL import Image
+
+# These tests exercise the real project code without reading a developer's .env
+# or writing test sessions into the user's data directory.
+_TEST_DATA = tempfile.TemporaryDirectory(prefix="theme-maker-tests-")
+os.environ["BOT_TOKEN"] = "123456789:TEST_ONLY_NOT_A_REAL_TOKEN"
+os.environ["THEME_MAKER_USER_DATA_DIR"] = _TEST_DATA.name
+
+import bot  # noqa: E402
+
+
+def tearDownModule():
+    asyncio.run(bot.dp.storage.close())
+    _TEST_DATA.cleanup()
+
+
+class ThemeExportTests(unittest.TestCase):
+    def setUp(self):
+        self.theme = bot.DEFAULT_THEME.copy()
+        bot.ensure_text_colors(self.theme)
+
+    def test_all_exporters_return_nonempty_bytes(self):
+        outputs = {
+            "desktop": bot.create_desktop_theme(self.theme, None),
+            "desktop_palette": bot.desktop_palette_text(self.theme),
+            "android": bot.create_android_theme(self.theme, None),
+            "ios": bot.create_ios_theme(self.theme),
+            "macos": bot.create_macos_palette(self.theme),
+            "telegram_x": bot.create_tgx_theme(self.theme),
+        }
+        for name, payload in outputs.items():
+            with self.subTest(format=name):
+                self.assertIsInstance(payload, bytes)
+                self.assertGreater(len(payload), 20)
+
+        self.assertIn(b"windowBg:", outputs["desktop_palette"])
+        self.assertIn(b"windowBackgroundWhite=", outputs["android"])
+        self.assertIn(b"basedOn:", outputs["ios"])
+        self.assertIn(b"isDark =", outputs["macos"])
+        self.assertIn(b"bubbleIn_background", outputs["telegram_x"])
+
+    def test_wallpaper_is_embedded_only_in_supported_formats(self):
+        image_stream = io.BytesIO()
+        Image.new("RGB", (8, 8), (25, 80, 140)).save(image_stream, format="JPEG")
+        image_path = Path(_TEST_DATA.name) / "wallpaper.jpg"
+        image_path.write_bytes(image_stream.getvalue())
+
+        desktop = bot.create_desktop_theme(self.theme, image_path)
+        with zipfile.ZipFile(io.BytesIO(desktop)) as archive:
+            self.assertEqual(
+                set(archive.namelist()),
+                {"colors.tdesktop-theme", "background.jpg"},
+            )
+            self.assertTrue(archive.read("background.jpg").startswith(b"\xff\xd8"))
+
+        android = bot.create_android_theme(self.theme, image_path)
+        self.assertIn(b"WPS\n", android)
+        self.assertIn(b"WPE\n", android)
+
+        ios = bot.create_ios_theme(self.theme)
+        macos = bot.create_macos_palette(self.theme)
+        tgx = bot.create_tgx_theme(self.theme)
+        self.assertNotIn(b"WPS\n", ios)
+        self.assertNotIn(b"WPS\n", macos)
+        self.assertNotIn(b"WPS\n", tgx)
+
+    def test_photo_palette_and_color_parsing(self):
+        self.assertEqual(bot.parse_color("#abc"), "#AABBCC")
+        self.assertEqual(bot.parse_color("255, 0, 128"), "#FF0080")
+        palette = ["#112233", "#445566", "#778899", "#AABBCC"]
+        photo_theme = bot.create_photo_theme(palette)
+        self.assertEqual(photo_theme["accent"], photo_theme["accent"].upper())
+        self.assertIn(photo_theme["accent"], palette)
+        self.assertIn(photo_theme["outgoing"], palette)
+        self.assertIn(photo_theme["incoming"], palette)
+
+    def test_photo_extraction_handles_valid_png(self):
+        stream = io.BytesIO()
+        Image.new("RGB", (20, 20), (45, 90, 135)).save(stream, format="PNG")
+        palette = bot.extract_palette(stream.getvalue())
+        self.assertTrue(palette)
+        self.assertTrue(all(bot.parse_color(color) for color in palette))
+
+
+if __name__ == "__main__":
+    unittest.main()
