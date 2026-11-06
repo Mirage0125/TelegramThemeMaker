@@ -1609,7 +1609,7 @@ async def update_photo_progress(progress_message: Message, language: str, percen
         await progress_message.edit_text(progress_text, parse_mode=ParseMode.HTML)
     except Exception as exc:
         # Progress is informational; a Telegram edit error must not stop image processing.
-        print(f"Не удалось обновить сообщение прогресса: {exc}")
+        print(f"Unable to update photo progress ({type(exc).__name__}).")
 
 
 async def download_with_progress(progress_message: Message, language: str, downloader):
@@ -2047,14 +2047,14 @@ async def image_upload(message: Message, state: FSMContext, bot: Bot):
         await apply_image_to_theme(message, state, raw, progress_message)
     except Exception as exc:
         # Catch Telegram transport errors too, so the user never sees a frozen progress message.
-        print(f"Ошибка загрузки/обработки фотографии: {exc}")
+        print(f"Photo upload or processing failed ({type(exc).__name__}).")
         try:
             await progress_message.edit_text(
                 tr(language, "photo_progress_error", error=html.escape(str(exc))),
                 parse_mode=ParseMode.HTML,
             )
         except Exception as edit_exc:
-            print(f"Не удалось показать ошибку обработки фото: {edit_exc}")
+            print(f"Unable to display the photo-processing error ({type(edit_exc).__name__}).")
 
 
 @dp.message(ThemeStates.waiting_image, F.text)
@@ -2077,14 +2077,14 @@ async def image_url(message: Message, state: FSMContext):
         )
         await apply_image_to_theme(message, state, raw, progress_message)
     except Exception as exc:
-        print(f"Ошибка загрузки фотографии по ссылке: {exc}")
+        print(f"Photo URL download failed ({type(exc).__name__}).")
         try:
             await progress_message.edit_text(
                 tr(language, "photo_progress_error", error=html.escape(str(exc))),
                 parse_mode=ParseMode.HTML,
             )
         except Exception as edit_exc:
-            print(f"Не удалось показать ошибку загрузки фото: {edit_exc}")
+            print(f"Unable to display the photo download error ({type(edit_exc).__name__}).")
 
 
 async def apply_image_to_theme(
