@@ -1,3 +1,8 @@
+TELEGRAM THEME MAKER 3.9.2
+==========================
+- Increased Telegram file metadata and download timeouts to handle slow connections without failing after the default 30-second download window.
+- Added a regression test to verify the extended timeout values are applied.
+
 TELEGRAM THEME MAKER 3.9.1
 ==========================
 - Added a live percentage indicator for photo downloads and processing stages.

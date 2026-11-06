@@ -47,6 +47,8 @@ try:
 except OSError:
     APP_VERSION = "unknown"
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
+TELEGRAM_GET_FILE_TIMEOUT = 120
+TELEGRAM_DOWNLOAD_TIMEOUT = 180
 MAX_IMAGE_SIDE = 1920
 PALETTE_IMAGE_SIDE = 320
 Image.MAX_IMAGE_PIXELS = 25_000_000
@@ -1745,21 +1747,31 @@ async def safe_download_image(url: str, progress_callback=None) -> bytes:
 
 async def download_telegram_image(message: Message, bot: Bot, progress_callback=None) -> bytes:
     if message.photo:
-        file_obj = await bot.get_file(message.photo[-1].file_id)
+        file_obj = await bot.get_file(
+            message.photo[-1].file_id,
+            request_timeout=TELEGRAM_GET_FILE_TIMEOUT,
+        )
     elif message.document:
         doc = message.document
         if not doc.mime_type or not doc.mime_type.startswith("image/"):
             raise ValueError("Это не изображение. Отправь JPG, PNG или WebP.")
         if doc.file_size and doc.file_size > MAX_IMAGE_BYTES:
             raise ValueError("Изображение больше 12 МБ.")
-        file_obj = await bot.get_file(doc.file_id)
+        file_obj = await bot.get_file(
+            doc.file_id,
+            request_timeout=TELEGRAM_GET_FILE_TIMEOUT,
+        )
     else:
         raise ValueError("Отправь картинку как фото или как файл.")
 
     if file_obj.file_size and file_obj.file_size > MAX_IMAGE_BYTES:
         raise ValueError("Изображение больше 12 МБ.")
     buffer = ProgressBytesIO(file_obj.file_size, progress_callback)
-    await bot.download_file(file_obj.file_path, destination=buffer)
+    await bot.download_file(
+        file_obj.file_path,
+        destination=buffer,
+        timeout=TELEGRAM_DOWNLOAD_TIMEOUT,
+    )
     return buffer.getvalue()
 
 
