@@ -1723,16 +1723,18 @@ async def select_language(callback: CallbackQuery, state: FSMContext):
 @dp.message(Command("create"))
 async def create_command(message: Message, state: FSMContext):
     await state.clear()
-    theme = DEFAULT_THEME.copy()
+    language = user_language(message.from_user.id)
+    theme = default_theme(language)
     await state.update_data(theme=theme, wallpaper_path=None)
-    await show_theme(message, theme, prefix="Создана новая тема.\n\n")
+    await show_theme(message, theme, prefix=tr(language, "prefix_create"))
 
 
 @dp.message(Command("fromphoto"))
 async def image_command(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(ThemeStates.waiting_image)
-    await message.answer("Пришли фотографию как фото/файл или вставь прямую ссылку на сам файл изображения. Картинка станет фоном чатов в форматах, которые поддерживают встроенные обои.")
+    language = user_language(message.from_user.id)
+    await message.answer(tr(language, "prompt_image_command"))
 
 
 @dp.message(Command("catalog"))
@@ -1749,33 +1751,24 @@ async def help_command(message: Message, state: FSMContext):
 
 @dp.message(Command("version"))
 async def version_command(message: Message):
-    await message.answer(
-        f"<b>Telegram Theme Maker {html.escape(APP_VERSION)}</b>\n"
-        "Проверка новых версий выполняется автоматически при запуске бота.\n"
-        "Если обновление найдено, оно устанавливается до запуска меню Telegram." ,
-        parse_mode=ParseMode.HTML,
-    )
+    language = user_language(message.from_user.id)
+    await message.answer(tr(language, "version_text", version=html.escape(APP_VERSION)), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("cancel"))
 async def cancel_command(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Текущий шаг отменён.", reply_markup=main_menu())
+    language = user_language(message.from_user.id)
+    await message.answer(tr(language, "cancelled"), reply_markup=main_menu(language))
 
 
 async def send_help(message: Message):
+    language = user_language(message.from_user.id)
     await message.answer(
-        "<b>Форматы экспорта</b>\n\n"
-        "• <b>Windows / Telegram Desktop:</b> <code>.tdesktop-theme</code> — файл темы, картинка включается внутрь файла.\n"
-        "• <b>Desktop Theme Editor:</b> <code>.tdesktop-palette</code> — палитра для импорта через редактор тем в настройках Desktop.\n"
-        "• <b>Android:</b> <code>.attheme</code> — тема Android; выбранные обои встраиваются в файл через формат WPS.\n"
-        "• <b>iPhone / iOS:</b> <code>.tgios-theme</code> — локальный файл темы iOS. В этой версии он содержит цвета интерфейса; локальная фотография не встраивается в него.\n"
-        "• <b>macOS:</b> <code>.palette</code> — палитра для Telegram macOS.\n"
-        "• <b>Telegram X:</b> <code>.tgx-theme</code> — отдельный формат Telegram X. Фото-обои в этот файл не встраиваются.\n\n"
-        "Важно: файлы разных клиентов не взаимозаменяемы. Для облачной ссылки <code>t.me/addtheme/...</code> тему нужно опубликовать через официальный редактор от имени пользовательского аккаунта.",
+        tr(language, "help_title") + tr(language, "help_body"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Открыть редактор облачных тем", url="https://themes.telegram.org")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")],
+            [InlineKeyboardButton(text=tr(language, "help_cloud_editor"), url="https://themes.telegram.org")],
+            [InlineKeyboardButton(text=tr(language, "home"), callback_data="home")],
         ]),
         parse_mode=ParseMode.HTML,
     )
@@ -1791,17 +1784,19 @@ async def help_callback(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "home")
 async def home(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await state.update_data(theme=DEFAULT_THEME.copy(), wallpaper_path=None)
-    await send_welcome(callback.message)
+    language = user_language(callback.from_user.id)
+    await state.update_data(theme=default_theme(language), wallpaper_path=None)
+    await send_welcome(callback.message, language)
     await callback.answer()
 
 
 @dp.callback_query(F.data == "create")
 async def create_callback(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    theme = DEFAULT_THEME.copy()
+    language = user_language(callback.from_user.id)
+    theme = default_theme(language)
     await state.update_data(theme=theme, wallpaper_path=None)
-    await show_theme(callback.message, theme, prefix="Создана новая тема.\n\n")
+    await show_theme(callback.message, theme, prefix=tr(language, "prefix_create"))
     await callback.answer()
 
 
@@ -1809,10 +1804,8 @@ async def create_callback(callback: CallbackQuery, state: FSMContext):
 async def image_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.set_state(ThemeStates.waiting_image)
-    await callback.message.answer(
-        "Пришли изображение как фото или файл. Можно также вставить прямую ссылку на сам JPG/PNG/WebP.\n\n"
-        "После загрузки я покажу макет Telegram с этой картинкой и подобранными цветами."
-    )
+    language = user_language(callback.from_user.id)
+    await callback.message.answer(tr(language, "prompt_image"))
     await callback.answer()
 
 
