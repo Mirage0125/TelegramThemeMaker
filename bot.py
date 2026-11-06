@@ -1895,49 +1895,118 @@ async def image_start(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(ThemeStates.waiting_image, F.photo | F.document)
 async def image_upload(message: Message, state: FSMContext, bot: Bot):
+    language = user_language(message.from_user.id)
+    progress_message = await message.answer(
+        tr(language, "photo_progress", percent=3, stage=tr(language, "photo_stage_downloading")),
+        parse_mode=ParseMode.HTML,
+    )
     try:
-        raw = await download_telegram_image(message, bot)
-        await apply_image_to_theme(message, state, raw)
+        raw = await download_with_progress(
+            progress_message,
+            language,
+            lambda report: download_telegram_image(message, bot, report),
+        )
+        await apply_image_to_theme(message, state, raw, progress_message)
     except (ValueError, UnidentifiedImageError, Image.DecompressionBombError, OSError) as exc:
-        language = user_language(message.from_user.id)
-        await message.answer(tr(language, "image_error", error=exc))
+        await update_photo_progress(
+            progress_message,
+            language,
+            100,
+            "photo_stage_done",
+        )
+        try:
+            await progress_message.edit_text(
+                tr(language, "photo_progress_error", error=html.escape(str(exc))),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as edit_exc:
+            print(f"Не удалось показать ошибку обработки фото: {edit_exc}")
 
 
 @dp.message(ThemeStates.waiting_image, F.text)
 async def image_url(message: Message, state: FSMContext):
+    language = user_language(message.from_user.id)
     url = (message.text or "").strip()
     if not url.lower().startswith(("http://", "https://")):
-        language = user_language(message.from_user.id)
         await message.answer(tr(language, "image_waiting"))
         return
+
+    progress_message = await message.answer(
+        tr(language, "photo_progress", percent=3, stage=tr(language, "photo_stage_downloading")),
+        parse_mode=ParseMode.HTML,
+    )
     try:
-        raw = await safe_download_image(url)
-        await apply_image_to_theme(message, state, raw)
+        raw = await download_with_progress(
+            progress_message,
+            language,
+            lambda report: safe_download_image(url, report),
+        )
+        await apply_image_to_theme(message, state, raw, progress_message)
     except (ValueError, aiohttp.ClientError, asyncio.TimeoutError, UnidentifiedImageError, Image.DecompressionBombError, OSError) as exc:
-        language = user_language(message.from_user.id)
-        await message.answer(tr(language, "image_url_error", error=exc))
+        try:
+            await progress_message.edit_text(
+                tr(language, "photo_progress_error", error=html.escape(str(exc))),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as edit_exc:
+            print(f"Не удалось показать ошибку загрузки фото: {edit_exc}")
 
 
-async def apply_image_to_theme(message: Message, state: FSMContext, raw: bytes):
+async def apply_image_to_theme(
+    message: Message,
+    state: FSMContext,
+    raw: bytes,
+    progress_message: Message | None = None,
+):
     language = user_language(message.from_user.id)
     if len(raw) > MAX_IMAGE_BYTES:
-        await message.answer(tr(language, "image_too_large"))
+        error_text = tr(language, "image_too_large")
+        if progress_message:
+            await progress_message.edit_text(error_text)
+        else:
+            await message.answer(error_text)
         return
-    colors = extract_palette(raw)
+
+    if progress_message:
+        await update_photo_progress(progress_message, language, 32, "photo_stage_analyzing")
+        colors, wallpaper = await prepare_photo_assets_with_progress(
+            message.from_user.id,
+            raw,
+            progress_message,
+            language,
+        )
+    else:
+        colors, wallpaper = await asyncio.to_thread(
+            prepare_photo_assets,
+            message.from_user.id,
+            raw,
+        )
+
     if not colors:
-        await message.answer(tr(language, "image_no_colors"))
+        error_text = tr(language, "image_no_colors")
+        if progress_message:
+            await progress_message.edit_text(error_text)
+        else:
+            await message.answer(error_text)
         return
+
     theme = create_photo_theme(colors)
     theme["name"] = tr(language, "default_theme_name")
-    wallpaper = save_user_wallpaper(message.from_user.id, raw)
     await state.clear()
-    await state.update_data(theme=theme, photo_theme_original=theme.copy(), wallpaper_path=str(wallpaper), image_palette=colors)
+    await state.update_data(
+        theme=theme,
+        photo_theme_original=theme.copy(),
+        wallpaper_path=str(wallpaper),
+        image_palette=colors,
+    )
     await show_theme(
         message,
         theme,
         str(wallpaper),
         prefix=tr(language, "prefix_photo"),
         image_palette=colors,
+        language=language,
+        progress_message=progress_message,
     )
 
 
