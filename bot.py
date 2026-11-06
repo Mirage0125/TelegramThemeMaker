@@ -48,7 +48,28 @@ except OSError:
     APP_VERSION = "unknown"
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_IMAGE_SIDE = 1920
+PALETTE_IMAGE_SIDE = 320
 Image.MAX_IMAGE_PIXELS = 25_000_000
+
+
+class ProgressBytesIO(io.BytesIO):
+    """A BytesIO download target that reports real byte-based progress."""
+
+    def __init__(self, total_size: int | None, progress_callback=None):
+        super().__init__()
+        self.total_size = max(0, int(total_size or 0))
+        self.progress_callback = progress_callback
+        self.last_reported_step = 0
+
+    def write(self, data: bytes) -> int:
+        written = super().write(data)
+        if self.total_size and self.progress_callback:
+            percent = min(100, int(self.tell() * 100 / self.total_size))
+            step = percent // 20
+            if step > self.last_reported_step or percent == 100:
+                self.last_reported_step = step
+                self.progress_callback(percent)
+        return written
 
 if not TOKEN or TOKEN == "PASTE_YOUR_BOT_TOKEN_HERE":
     raise SystemExit("Не найден токен. Открой .env, вставь токен от @BotFather и перезапусти Start.bat.")
@@ -376,24 +397,34 @@ def contrast_color(background: str) -> str:
     return auto_text_color(background)
 
 
-def save_user_wallpaper(user_id: int, raw: bytes) -> Path:
+def _save_user_wallpaper_image(user_id: int, image: Image.Image) -> Path:
     user_dir = USER_DATA / str(user_id)
     user_dir.mkdir(parents=True, exist_ok=True)
     # Each theme gets its own file: a later upload must not mutate an older active theme.
     dest = user_dir / f"wallpaper_{uuid.uuid4().hex[:12]}.jpg"
-    with Image.open(io.BytesIO(raw)) as image:
-        image = ImageOps.exif_transpose(image).convert("RGB")
-        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.LANCZOS)
-        image.save(dest, "JPEG", quality=91, optimize=True, progressive=True)
+    image.save(dest, "JPEG", quality=87)
     return dest
 
 
-def extract_palette(raw: bytes):
-    with Image.open(io.BytesIO(raw)) as image:
-        image = ImageOps.exif_transpose(image).convert("RGB")
-        image.thumbnail((500, 500), Image.Resampling.LANCZOS)
-        quantized = image.quantize(colors=8, method=Image.Quantize.MEDIANCUT).convert("RGB")
-        colors = sorted(quantized.getcolors(500 * 500) or [], reverse=True)
+def save_user_wallpaper(user_id: int, raw: bytes) -> Path:
+    with Image.open(io.BytesIO(raw)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.BICUBIC)
+        return _save_user_wallpaper_image(user_id, image)
+
+
+def _extract_palette_from_image(image: Image.Image) -> list[str]:
+    # A 320 px sample is enough for a small theme palette and is much cheaper to quantize.
+    sample = image.copy()
+    sample.thumbnail((PALETTE_IMAGE_SIDE, PALETTE_IMAGE_SIDE), Image.Resampling.BILINEAR)
+    quantized = sample.quantize(
+        colors=8,
+        method=Image.Quantize.FASTOCTREE,
+    ).convert("RGB")
+    colors = sorted(
+        quantized.getcolors(PALETTE_IMAGE_SIDE * PALETTE_IMAGE_SIDE) or [],
+        reverse=True,
+    )
     result = []
     for _, rgb in colors:
         value = rgb_hex(rgb)
@@ -402,6 +433,31 @@ def extract_palette(raw: bytes):
         if len(result) == 8:
             break
     return result
+
+
+def extract_palette(raw: bytes):
+    with Image.open(io.BytesIO(raw)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        return _extract_palette_from_image(image)
+
+
+def prepare_photo_assets(user_id: int, raw: bytes, progress_callback=None) -> tuple[list[str], Path]:
+    """Decode an uploaded image once, then make both the palette and wallpaper from it."""
+    with Image.open(io.BytesIO(raw)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.BICUBIC)
+        if progress_callback:
+            progress_callback(42, "photo_stage_analyzing")
+
+        palette = _extract_palette_from_image(image)
+        if progress_callback:
+            progress_callback(64, "photo_stage_palette")
+
+        wallpaper = _save_user_wallpaper_image(user_id, image)
+        if progress_callback:
+            progress_callback(76, "photo_stage_saving")
+
+    return palette, wallpaper
 
 
 def create_photo_theme(image_palette: list[str], previous_theme: dict | None = None) -> dict:
@@ -621,7 +677,8 @@ def render_preview(theme: dict, wallpaper_path: str | None = None, image_palette
         d.rectangle((sidebar_w + i * ((width - sidebar_w) // 4), strip_y, sidebar_w + (i + 1) * ((width - sidebar_w) // 4), height), fill=col)
 
     out = io.BytesIO()
-    canvas.convert("RGB").save(out, format="JPEG", quality=88, optimize=True)
+    # Skipping the slow Huffman optimisation noticeably reduces preview encoding time.
+    canvas.convert("RGB").save(out, format="JPEG", quality=85)
     return out.getvalue()
 
 
@@ -1535,7 +1592,102 @@ class PublicOnlyResolver(aiohttp.abc.AbstractResolver):
         await self._delegate.close()
 
 
-async def safe_download_image(url: str) -> bytes:
+async def update_photo_progress(progress_message: Message, language: str, percent: int, stage_key: str):
+    percent = max(0, min(100, int(percent)))
+    progress_text = tr(
+        language,
+        "photo_progress",
+        percent=percent,
+        stage=tr(language, stage_key),
+    )
+    try:
+        await progress_message.edit_text(progress_text, parse_mode=ParseMode.HTML)
+    except Exception as exc:
+        # Progress is informational; a Telegram edit error must not stop image processing.
+        print(f"Не удалось обновить сообщение прогресса: {exc}")
+
+
+async def download_with_progress(progress_message: Message, language: str, downloader):
+    """Run an async downloader while reflecting byte-based progress in Telegram."""
+    queue: asyncio.Queue[int] = asyncio.Queue()
+
+    def report(percent: int):
+        queue.put_nowait(max(0, min(100, int(percent))))
+
+    await update_photo_progress(progress_message, language, 3, "photo_stage_downloading")
+    task = asyncio.create_task(downloader(report))
+    displayed_percent = 3
+    while not task.done() or not queue.empty():
+        try:
+            downloaded_percent = await asyncio.wait_for(queue.get(), timeout=0.4)
+        except asyncio.TimeoutError:
+            if task.done():
+                await asyncio.sleep(0)
+                if queue.empty():
+                    break
+            continue
+        # Reserve the first 30% for actual download progress.
+        current_percent = 5 + downloaded_percent * 22 // 100
+        if current_percent > displayed_percent:
+            displayed_percent = current_percent
+            await update_photo_progress(
+                progress_message, language, displayed_percent, "photo_stage_downloading"
+            )
+
+    result = await task
+    while not queue.empty():
+        downloaded_percent = queue.get_nowait()
+        current_percent = 5 + downloaded_percent * 22 // 100
+        if current_percent > displayed_percent:
+            displayed_percent = current_percent
+            await update_photo_progress(
+                progress_message, language, displayed_percent, "photo_stage_downloading"
+            )
+    await update_photo_progress(progress_message, language, 30, "photo_stage_analyzing")
+    return result
+
+
+async def prepare_photo_assets_with_progress(
+    user_id: int,
+    raw: bytes,
+    progress_message: Message,
+    language: str,
+) -> tuple[list[str], Path]:
+    """Run Pillow work off the event loop and relay actual processing stages."""
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
+
+    def report(percent: int, stage_key: str):
+        loop.call_soon_threadsafe(queue.put_nowait, (percent, stage_key))
+
+    task = asyncio.create_task(
+        asyncio.to_thread(
+            prepare_photo_assets,
+            user_id,
+            raw,
+            progress_callback=report,
+        )
+    )
+    while not task.done() or not queue.empty():
+        try:
+            percent, stage_key = await asyncio.wait_for(queue.get(), timeout=0.4)
+        except asyncio.TimeoutError:
+            if task.done():
+                # Let thread-safe callbacks scheduled just before thread completion run.
+                await asyncio.sleep(0)
+                if queue.empty():
+                    break
+            continue
+        await update_photo_progress(progress_message, language, percent, stage_key)
+
+    result = await task
+    while not queue.empty():
+        percent, stage_key = queue.get_nowait()
+        await update_photo_progress(progress_message, language, percent, stage_key)
+    return result
+
+
+async def safe_download_image(url: str, progress_callback=None) -> bytes:
     """Download a public image URL, validating redirects and the actual connection IP."""
     current_url = url.strip()
     timeout = aiohttp.ClientTimeout(total=25, connect=8)
@@ -1575,14 +1727,23 @@ async def safe_download_image(url: str) -> bytes:
                 length = int(response.headers.get("Content-Length", "0") or 0)
                 if length > MAX_IMAGE_BYTES:
                     raise ValueError("Изображение больше 12 МБ.")
-                data = await response.content.read(MAX_IMAGE_BYTES + 1)
-                if len(data) > MAX_IMAGE_BYTES:
-                    raise ValueError("Изображение больше 12 МБ.")
-                return data
+                data = bytearray()
+                last_reported_step = 0
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    data.extend(chunk)
+                    if len(data) > MAX_IMAGE_BYTES:
+                        raise ValueError("Изображение больше 12 МБ.")
+                    if progress_callback and length > 0:
+                        percent = min(100, int(len(data) * 100 / length))
+                        step = percent // 20
+                        if step > last_reported_step or percent == 100:
+                            last_reported_step = step
+                            progress_callback(percent)
+                return bytes(data)
     raise ValueError("Слишком много перенаправлений. Скачай изображение и отправь его файлом.")
 
 
-async def download_telegram_image(message: Message, bot: Bot) -> bytes:
+async def download_telegram_image(message: Message, bot: Bot, progress_callback=None) -> bytes:
     if message.photo:
         file_obj = await bot.get_file(message.photo[-1].file_id)
     elif message.document:
@@ -1594,7 +1755,10 @@ async def download_telegram_image(message: Message, bot: Bot) -> bytes:
         file_obj = await bot.get_file(doc.file_id)
     else:
         raise ValueError("Отправь картинку как фото или как файл.")
-    buffer = io.BytesIO()
+
+    if file_obj.file_size and file_obj.file_size > MAX_IMAGE_BYTES:
+        raise ValueError("Изображение больше 12 МБ.")
+    buffer = ProgressBytesIO(file_obj.file_size, progress_callback)
     await bot.download_file(file_obj.file_path, destination=buffer)
     return buffer.getvalue()
 
@@ -1606,10 +1770,13 @@ async def show_theme(
     prefix: str = "",
     image_palette: list[str] | None = None,
     language: str | None = None,
+    progress_message: Message | None = None,
 ):
     ensure_text_colors(theme)
     language = language or user_language(message.from_user.id)
-    preview = render_preview(theme, wallpaper_path, image_palette)
+    if progress_message:
+        await update_photo_progress(progress_message, language, 87, "photo_stage_preview")
+    preview = await asyncio.to_thread(render_preview, theme, wallpaper_path, image_palette)
     title = html.escape(str(theme.get("name", tr(language, "default_theme_name"))))
     image_note = tr(language, "theme_wallpaper") if wallpaper_path else tr(language, "theme_solid")
     palette_note = ""
@@ -1636,6 +1803,8 @@ async def show_theme(
         reply_markup=theme_keyboard(language, bool(image_palette)),
         parse_mode=ParseMode.HTML,
     )
+    if progress_message:
+        await update_photo_progress(progress_message, language, 100, "photo_stage_done")
 
 
 def welcome_cover_path() -> Path:
@@ -1821,49 +1990,115 @@ async def image_start(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(ThemeStates.waiting_image, F.photo | F.document)
 async def image_upload(message: Message, state: FSMContext, bot: Bot):
+    language = user_language(message.from_user.id)
+    progress_message = await message.answer(
+        tr(language, "photo_progress", percent=3, stage=tr(language, "photo_stage_downloading")),
+        parse_mode=ParseMode.HTML,
+    )
     try:
-        raw = await download_telegram_image(message, bot)
-        await apply_image_to_theme(message, state, raw)
-    except (ValueError, UnidentifiedImageError, Image.DecompressionBombError, OSError) as exc:
-        language = user_language(message.from_user.id)
-        await message.answer(tr(language, "image_error", error=exc))
+        raw = await download_with_progress(
+            progress_message,
+            language,
+            lambda report: download_telegram_image(message, bot, report),
+        )
+        await apply_image_to_theme(message, state, raw, progress_message)
+    except Exception as exc:
+        # Catch Telegram transport errors too, so the user never sees a frozen progress message.
+        print(f"Ошибка загрузки/обработки фотографии: {exc}")
+        try:
+            await progress_message.edit_text(
+                tr(language, "photo_progress_error", error=html.escape(str(exc))),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as edit_exc:
+            print(f"Не удалось показать ошибку обработки фото: {edit_exc}")
 
 
 @dp.message(ThemeStates.waiting_image, F.text)
 async def image_url(message: Message, state: FSMContext):
+    language = user_language(message.from_user.id)
     url = (message.text or "").strip()
     if not url.lower().startswith(("http://", "https://")):
-        language = user_language(message.from_user.id)
         await message.answer(tr(language, "image_waiting"))
         return
+
+    progress_message = await message.answer(
+        tr(language, "photo_progress", percent=3, stage=tr(language, "photo_stage_downloading")),
+        parse_mode=ParseMode.HTML,
+    )
     try:
-        raw = await safe_download_image(url)
-        await apply_image_to_theme(message, state, raw)
-    except (ValueError, aiohttp.ClientError, asyncio.TimeoutError, UnidentifiedImageError, Image.DecompressionBombError, OSError) as exc:
-        language = user_language(message.from_user.id)
-        await message.answer(tr(language, "image_url_error", error=exc))
+        raw = await download_with_progress(
+            progress_message,
+            language,
+            lambda report: safe_download_image(url, report),
+        )
+        await apply_image_to_theme(message, state, raw, progress_message)
+    except Exception as exc:
+        print(f"Ошибка загрузки фотографии по ссылке: {exc}")
+        try:
+            await progress_message.edit_text(
+                tr(language, "photo_progress_error", error=html.escape(str(exc))),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as edit_exc:
+            print(f"Не удалось показать ошибку загрузки фото: {edit_exc}")
 
 
-async def apply_image_to_theme(message: Message, state: FSMContext, raw: bytes):
+async def apply_image_to_theme(
+    message: Message,
+    state: FSMContext,
+    raw: bytes,
+    progress_message: Message | None = None,
+):
     language = user_language(message.from_user.id)
     if len(raw) > MAX_IMAGE_BYTES:
-        await message.answer(tr(language, "image_too_large"))
+        error_text = tr(language, "image_too_large")
+        if progress_message:
+            await progress_message.edit_text(error_text)
+        else:
+            await message.answer(error_text)
         return
-    colors = extract_palette(raw)
+
+    if progress_message:
+        await update_photo_progress(progress_message, language, 32, "photo_stage_analyzing")
+        colors, wallpaper = await prepare_photo_assets_with_progress(
+            message.from_user.id,
+            raw,
+            progress_message,
+            language,
+        )
+    else:
+        colors, wallpaper = await asyncio.to_thread(
+            prepare_photo_assets,
+            message.from_user.id,
+            raw,
+        )
+
     if not colors:
-        await message.answer(tr(language, "image_no_colors"))
+        error_text = tr(language, "image_no_colors")
+        if progress_message:
+            await progress_message.edit_text(error_text)
+        else:
+            await message.answer(error_text)
         return
+
     theme = create_photo_theme(colors)
     theme["name"] = tr(language, "default_theme_name")
-    wallpaper = save_user_wallpaper(message.from_user.id, raw)
     await state.clear()
-    await state.update_data(theme=theme, photo_theme_original=theme.copy(), wallpaper_path=str(wallpaper), image_palette=colors)
+    await state.update_data(
+        theme=theme,
+        photo_theme_original=theme.copy(),
+        wallpaper_path=str(wallpaper),
+        image_palette=colors,
+    )
     await show_theme(
         message,
         theme,
         str(wallpaper),
         prefix=tr(language, "prefix_photo"),
         image_palette=colors,
+        language=language,
+        progress_message=progress_message,
     )
 
 

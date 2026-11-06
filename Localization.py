@@ -134,6 +134,14 @@ TEXTS = {
             "Пришли фотографию как фото или файл либо вставь прямую ссылку на изображение. "
             "Я использую её как обои там, где формат темы это поддерживает."
         ),
+        "photo_progress": "<b>Загрузка: {percent}%</b>\n{stage}",
+        "photo_progress_error": "Не получилось обработать фото: {error}",
+        "photo_stage_downloading": "Получаю изображение…",
+        "photo_stage_analyzing": "Проверяю изображение…",
+        "photo_stage_palette": "Подбираю цвета по фотографии…",
+        "photo_stage_saving": "Сохраняю обои…",
+        "photo_stage_preview": "Готовлю предпросмотр темы…",
+        "photo_stage_done": "Готово!",
         "image_waiting": "Жду изображение. Пришли его файлом или вставь прямую ссылку на картинку.",
         "image_too_large": "Изображение великовато: максимальный размер — 12 МБ.",
         "image_no_colors": "Не получилось подобрать цвета по этой картинке. Попробуй другое изображение.",
@@ -315,6 +323,14 @@ TEXTS = {
             "Send a photo or image file, or paste a direct image link. "
             "I'll use it as chat wallpaper in the theme formats that support it."
         ),
+        "photo_progress": "<b>Loading: {percent}%</b>\n{stage}",
+        "photo_progress_error": "Couldn't process the photo: {error}",
+        "photo_stage_downloading": "Receiving the image…",
+        "photo_stage_analyzing": "Checking the image…",
+        "photo_stage_palette": "Picking colours from the photo…",
+        "photo_stage_saving": "Saving the wallpaper…",
+        "photo_stage_preview": "Preparing the theme preview…",
+        "photo_stage_done": "All done!",
         "image_waiting": "I'm ready for the image — send it as a file or paste a direct image link.",
         "image_too_large": "That image is a bit too large. The limit is 12 MB.",
         "image_no_colors": "I couldn't find a usable colour palette in that image. Try another one.",

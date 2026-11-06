@@ -1,3 +1,11 @@
+TELEGRAM THEME MAKER 3.9.1
+==========================
+- Added a live percentage indicator for photo downloads and processing stages.
+- Moved Pillow image processing and preview rendering to worker threads so the bot remains responsive.
+- Reused a single decoded image for palette extraction and wallpaper saving.
+- Reduced palette sampling work and removed slow JPEG optimisation from generated previews and saved wallpapers.
+- Added regression tests for byte-based progress and background photo preparation.
+
 TELEGRAM THEME MAKER 3.9.0
 ==========================
 - Added a Russian / English language picker to the first /start screen.
