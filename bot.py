@@ -48,7 +48,28 @@ except OSError:
     APP_VERSION = "unknown"
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_IMAGE_SIDE = 1920
+PALETTE_IMAGE_SIDE = 320
 Image.MAX_IMAGE_PIXELS = 25_000_000
+
+
+class ProgressBytesIO(io.BytesIO):
+    """A BytesIO download target that reports real byte-based progress."""
+
+    def __init__(self, total_size: int | None, progress_callback=None):
+        super().__init__()
+        self.total_size = max(0, int(total_size or 0))
+        self.progress_callback = progress_callback
+        self.last_reported_step = 0
+
+    def write(self, data: bytes) -> int:
+        written = super().write(data)
+        if self.total_size and self.progress_callback:
+            percent = min(100, int(self.tell() * 100 / self.total_size))
+            step = percent // 20
+            if step > self.last_reported_step or percent == 100:
+                self.last_reported_step = step
+                self.progress_callback(percent)
+        return written
 
 if not TOKEN or TOKEN == "PASTE_YOUR_BOT_TOKEN_HERE":
     raise SystemExit("Не найден токен. Открой .env, вставь токен от @BotFather и перезапусти Start.bat.")
@@ -376,24 +397,34 @@ def contrast_color(background: str) -> str:
     return auto_text_color(background)
 
 
-def save_user_wallpaper(user_id: int, raw: bytes) -> Path:
+def _save_user_wallpaper_image(user_id: int, image: Image.Image) -> Path:
     user_dir = USER_DATA / str(user_id)
     user_dir.mkdir(parents=True, exist_ok=True)
     # Each theme gets its own file: a later upload must not mutate an older active theme.
     dest = user_dir / f"wallpaper_{uuid.uuid4().hex[:12]}.jpg"
-    with Image.open(io.BytesIO(raw)) as image:
-        image = ImageOps.exif_transpose(image).convert("RGB")
-        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.LANCZOS)
-        image.save(dest, "JPEG", quality=91, optimize=True, progressive=True)
+    image.save(dest, "JPEG", quality=87, progressive=True)
     return dest
 
 
-def extract_palette(raw: bytes):
-    with Image.open(io.BytesIO(raw)) as image:
-        image = ImageOps.exif_transpose(image).convert("RGB")
-        image.thumbnail((500, 500), Image.Resampling.LANCZOS)
-        quantized = image.quantize(colors=8, method=Image.Quantize.MEDIANCUT).convert("RGB")
-        colors = sorted(quantized.getcolors(500 * 500) or [], reverse=True)
+def save_user_wallpaper(user_id: int, raw: bytes) -> Path:
+    with Image.open(io.BytesIO(raw)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.BICUBIC)
+        return _save_user_wallpaper_image(user_id, image)
+
+
+def _extract_palette_from_image(image: Image.Image) -> list[str]:
+    # A 320 px sample is enough for a small theme palette and is much cheaper to quantize.
+    sample = image.copy()
+    sample.thumbnail((PALETTE_IMAGE_SIDE, PALETTE_IMAGE_SIDE), Image.Resampling.BILINEAR)
+    quantized = sample.quantize(
+        colors=8,
+        method=Image.Quantize.FASTOCTREE,
+    ).convert("RGB")
+    colors = sorted(
+        quantized.getcolors(PALETTE_IMAGE_SIDE * PALETTE_IMAGE_SIDE) or [],
+        reverse=True,
+    )
     result = []
     for _, rgb in colors:
         value = rgb_hex(rgb)
@@ -402,6 +433,31 @@ def extract_palette(raw: bytes):
         if len(result) == 8:
             break
     return result
+
+
+def extract_palette(raw: bytes):
+    with Image.open(io.BytesIO(raw)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        return _extract_palette_from_image(image)
+
+
+def prepare_photo_assets(user_id: int, raw: bytes, progress_callback=None) -> tuple[list[str], Path]:
+    """Decode an uploaded image once, then make both the palette and wallpaper from it."""
+    with Image.open(io.BytesIO(raw)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.BICUBIC)
+        if progress_callback:
+            progress_callback(42, "photo_stage_analyzing")
+
+        palette = _extract_palette_from_image(image)
+        if progress_callback:
+            progress_callback(64, "photo_stage_palette")
+
+        wallpaper = _save_user_wallpaper_image(user_id, image)
+        if progress_callback:
+            progress_callback(76, "photo_stage_saving")
+
+    return palette, wallpaper
 
 
 def create_photo_theme(image_palette: list[str], previous_theme: dict | None = None) -> dict:
@@ -621,7 +677,8 @@ def render_preview(theme: dict, wallpaper_path: str | None = None, image_palette
         d.rectangle((sidebar_w + i * ((width - sidebar_w) // 4), strip_y, sidebar_w + (i + 1) * ((width - sidebar_w) // 4), height), fill=col)
 
     out = io.BytesIO()
-    canvas.convert("RGB").save(out, format="JPEG", quality=88, optimize=True)
+    # Skipping the slow Huffman optimisation noticeably reduces preview encoding time.
+    canvas.convert("RGB").save(out, format="JPEG", quality=85)
     return out.getvalue()
 
 
