@@ -72,6 +72,29 @@ class ThemeExportTests(unittest.TestCase):
         self.assertNotIn(b"WPS\n", macos)
         self.assertNotIn(b"WPS\n", tgx)
 
+    def test_welcome_cover_prefers_local_override_then_falls_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            local = root / "assets" / "welcome.png"
+            bundled = root / "defaults" / "welcome.png"
+            local.parent.mkdir()
+            bundled.parent.mkdir()
+            local.write_bytes(b"local cover")
+            bundled.write_bytes(b"default cover")
+
+            original_local = bot.COVER_PATH
+            original_default = bot.DEFAULT_COVER_PATH
+            try:
+                bot.COVER_PATH = local
+                bot.DEFAULT_COVER_PATH = bundled
+                self.assertEqual(bot.welcome_cover_path(), local)
+
+                local.unlink()
+                self.assertEqual(bot.welcome_cover_path(), bundled)
+            finally:
+                bot.COVER_PATH = original_local
+                bot.DEFAULT_COVER_PATH = original_default
+
     def test_photo_palette_and_color_parsing(self):
         self.assertEqual(bot.parse_color("#abc"), "#AABBCC")
         self.assertEqual(bot.parse_color("255, 0, 128"), "#FF0080")

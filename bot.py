@@ -38,7 +38,8 @@ load_dotenv(ROOT / ".env")
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 CATALOG_PATH = ROOT / "themes" / "catalog.json"
 USER_DATA = Path(os.getenv("THEME_MAKER_USER_DATA_DIR", str(ROOT / "user_data"))).expanduser()
-COVER_PATH = ROOT / "assets" / "welcome.png"
+COVER_PATH = ROOT / "assets" / "welcome.png"  # User-owned override; never replaced by releases.
+DEFAULT_COVER_PATH = ROOT / "defaults" / "welcome.png"
 VERSION_PATH = ROOT / "VERSION.txt"
 try:
     APP_VERSION = VERSION_PATH.read_text(encoding="utf-8-sig").strip()
@@ -1595,6 +1596,11 @@ async def show_theme(
     )
 
 
+def welcome_cover_path() -> Path:
+    """Prefer the user's local cover and fall back to the bundled default."""
+    return COVER_PATH if COVER_PATH.is_file() else DEFAULT_COVER_PATH
+
+
 async def send_welcome(message: Message):
     text = (
         "<b>Theme Maker</b>\n"
@@ -1603,9 +1609,11 @@ async def send_welcome(message: Message):
         "Перед экспортом ты увидишь наглядный макет чата, а не список непонятных цветовых кодов.\n\n"
         "Выбери, с чего начнём:"
     )
-    if COVER_PATH.exists():
+    # Preserve a user's customized local cover; fall back to the bundled default.
+    cover_path = welcome_cover_path()
+    if cover_path.is_file():
         await message.answer_photo(
-            BufferedInputFile(COVER_PATH.read_bytes(), filename="theme-maker-welcome.png"),
+            BufferedInputFile(cover_path.read_bytes(), filename="theme-maker-welcome.png"),
             caption=text, reply_markup=main_menu(), parse_mode=ParseMode.HTML,
         )
     else:

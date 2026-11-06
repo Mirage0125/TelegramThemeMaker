@@ -31,7 +31,7 @@ $requiredFiles = @(
     "config.example.env",
     "themes\catalog.json",
     "themes\android_keys.txt",
-    "assets\welcome.png"
+    "defaults\welcome.png"
 )
 $missingFiles = @()
 foreach ($relativePath in $requiredFiles) {
@@ -58,7 +58,7 @@ if (Test-Path -LiteralPath $versionPath) {
     Add-Check "Project version" "FAIL" "VERSION.txt was not found."
 }
 
-$assetPath = Join-Path $Root "assets\welcome.png"
+$assetPath = Join-Path $Root "defaults\welcome.png"
 if (Test-Path -LiteralPath $assetPath -PathType Leaf) {
     try {
         $assetBytes = [System.IO.File]::ReadAllBytes($assetPath)
@@ -75,6 +75,13 @@ if (Test-Path -LiteralPath $assetPath -PathType Leaf) {
     } catch {
         Add-Check "Welcome image" "FAIL" $_.Exception.Message
     }
+}
+
+$localOverridePath = Join-Path $Root "assets\welcome.png"
+if (Test-Path -LiteralPath $localOverridePath -PathType Leaf) {
+    Add-Check "Local welcome override" "INFO" "A local assets\welcome.png exists and will be preferred over the bundled default."
+} else {
+    Add-Check "Local welcome override" "INFO" "No local cover override; defaults\welcome.png will be used."
 }
 
 $updaterPath = Join-Path $Root "UpdateManager.py"
