@@ -1635,6 +1635,14 @@ async def download_with_progress(progress_message: Message, language: str, downl
             )
 
     result = await task
+    while not queue.empty():
+        downloaded_percent = queue.get_nowait()
+        current_percent = 5 + downloaded_percent * 22 // 100
+        if current_percent > displayed_percent:
+            displayed_percent = current_percent
+            await update_photo_progress(
+                progress_message, language, displayed_percent, "photo_stage_downloading"
+            )
     await update_photo_progress(progress_message, language, 30, "photo_stage_analyzing")
     return result
 
@@ -1672,7 +1680,11 @@ async def prepare_photo_assets_with_progress(
             continue
         await update_photo_progress(progress_message, language, percent, stage_key)
 
-    return await task
+    result = await task
+    while not queue.empty():
+        percent, stage_key = queue.get_nowait()
+        await update_photo_progress(progress_message, language, percent, stage_key)
+    return result
 
 
 async def safe_download_image(url: str, progress_callback=None) -> bytes:
