@@ -1815,31 +1815,36 @@ async def image_upload(message: Message, state: FSMContext, bot: Bot):
         raw = await download_telegram_image(message, bot)
         await apply_image_to_theme(message, state, raw)
     except (ValueError, UnidentifiedImageError, Image.DecompressionBombError, OSError) as exc:
-        await message.answer(f"Не получилось обработать изображение: {exc}")
+        language = user_language(message.from_user.id)
+        await message.answer(tr(language, "image_error", error=exc))
 
 
 @dp.message(ThemeStates.waiting_image, F.text)
 async def image_url(message: Message, state: FSMContext):
     url = (message.text or "").strip()
     if not url.lower().startswith(("http://", "https://")):
-        await message.answer("Жду изображение. Пришли его файлом или вставь прямую ссылку на картинку.")
+        language = user_language(message.from_user.id)
+        await message.answer(tr(language, "image_waiting"))
         return
     try:
         raw = await safe_download_image(url)
         await apply_image_to_theme(message, state, raw)
     except (ValueError, aiohttp.ClientError, asyncio.TimeoutError, UnidentifiedImageError, Image.DecompressionBombError, OSError) as exc:
-        await message.answer(f"Не удалось взять картинку по ссылке: {exc}")
+        language = user_language(message.from_user.id)
+        await message.answer(tr(language, "image_url_error", error=exc))
 
 
 async def apply_image_to_theme(message: Message, state: FSMContext, raw: bytes):
+    language = user_language(message.from_user.id)
     if len(raw) > MAX_IMAGE_BYTES:
-        await message.answer("Изображение слишком большое. Максимум 12 МБ.")
+        await message.answer(tr(language, "image_too_large"))
         return
     colors = extract_palette(raw)
     if not colors:
-        await message.answer("Не удалось извлечь цвета из изображения.")
+        await message.answer(tr(language, "image_no_colors"))
         return
     theme = create_photo_theme(colors)
+    theme["name"] = tr(language, "default_theme_name")
     wallpaper = save_user_wallpaper(message.from_user.id, raw)
     await state.clear()
     await state.update_data(theme=theme, photo_theme_original=theme.copy(), wallpaper_path=str(wallpaper), image_palette=colors)
@@ -1847,7 +1852,7 @@ async def apply_image_to_theme(message: Message, state: FSMContext, raw: bytes):
         message,
         theme,
         str(wallpaper),
-        prefix="Картинка стала фоном темы. Я извлёк из неё палитру — теперь можно выбирать отдельные оттенки или перемешать сочетание.\n\n",
+        prefix=tr(language, "prefix_photo"),
         image_palette=colors,
     )
 
@@ -1855,22 +1860,19 @@ async def apply_image_to_theme(message: Message, state: FSMContext, raw: bytes):
 @dp.callback_query(F.data.startswith("field:"))
 async def choose_field(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
+    language = user_language(callback.from_user.id)
     field = callback.data.split(":", 1)[1]
     if field not in FIELD_LABELS:
-        await callback.answer("Неизвестный параметр", show_alert=True)
+        await callback.answer(tr(language, "field_unknown"), show_alert=True)
         return
     data = await state.get_data()
     image_palette = data.get("image_palette")
     await state.update_data(editing_field=field)
-    instruction = (
-        "Выбери один из оттенков, которые бот нашёл на фотографии.\n"
-        "HEX-коды — это точные цвета исходного изображения."
-        if image_palette else
-        "Выбери обычное название цвета или введи свой цвет."
-    )
+    instruction = tr(language, "photo_palette_prompt") if image_palette else tr(language, "color_prompt")
     await callback.message.answer(
-        f"<b>{FIELD_LABELS[field]}</b>\n{FIELD_HELP[field]}\n\n{instruction}",
-        reply_markup=color_choice_keyboard(field, image_palette), parse_mode=ParseMode.HTML,
+        f"<b>{field_label(language, field)}</b>\n{field_help(language, field)}\n\n{instruction}",
+        reply_markup=color_choice_keyboard(language, field, image_palette),
+        parse_mode=ParseMode.HTML,
     )
     await callback.answer()
 
