@@ -78,6 +78,9 @@ def main() -> int:
             sys.stderr = log
             print(f"\n[{timestamp()}] Запуск фонового процесса Theme Maker")
             try:
+                # Make the already-held lock visible to UpdateManager and bot.py.
+                os.environ[LOCK_ENVIRONMENT_FLAG] = "1"
+
                 # Updating is best-effort, but the instance lock is already held:
                 # two launches can never replace project files at the same time.
                 try:
@@ -93,9 +96,6 @@ def main() -> int:
                     )
                     traceback.print_exc()
 
-                # bot.py supports direct launch too. This flag tells it that this
-                # parent runner already owns the same OS-level lock.
-                os.environ[LOCK_ENVIRONMENT_FLAG] = "1"
                 runpy.run_path(str(ROOT / "bot.py"), run_name="__main__")
                 print(f"[{timestamp()}] Процесс бота завершился.")
                 return 0
