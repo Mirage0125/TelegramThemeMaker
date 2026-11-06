@@ -6,7 +6,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 # These tests exercise the real project code without reading a developer's .env
 # or writing test sessions into the user's data directory.
@@ -132,6 +132,46 @@ class ThemeExportTests(unittest.TestCase):
 
         self.assertEqual(bot.default_theme("en")["name"], "My theme")
         self.assertEqual(bot.default_theme("ru")["name"], "Моя тема")
+
+    def test_photo_download_progress_buffer_reports_real_percentages(self):
+        updates = []
+        buffer = bot.ProgressBytesIO(100, updates.append)
+        for _ in range(10):
+            buffer.write(b"x" * 10)
+
+        self.assertEqual(updates, [20, 40, 60, 80, 100])
+        self.assertEqual(len(buffer.getvalue()), 100)
+
+    def test_photo_preparation_reuses_image_and_reports_stages(self):
+        stream = io.BytesIO()
+        image = Image.new("RGB", (900, 600), "#223344")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, 299, 599), fill="#CC5577")
+        draw.rectangle((300, 0, 599, 599), fill="#55AA77")
+        draw.rectangle((600, 0, 899, 599), fill="#DDBB44")
+        image.save(stream, format="PNG")
+
+        with tempfile.TemporaryDirectory() as directory:
+            original_user_data = bot.USER_DATA
+            bot.USER_DATA = Path(directory)
+            updates = []
+            try:
+                palette, wallpaper = bot.prepare_photo_assets(
+                    404,
+                    stream.getvalue(),
+                    progress_callback=lambda percent, stage: updates.append((percent, stage)),
+                )
+                self.assertTrue(palette)
+                self.assertLessEqual(len(palette), 8)
+                self.assertTrue(wallpaper.is_file())
+                with Image.open(wallpaper) as saved:
+                    self.assertLessEqual(max(saved.size), bot.MAX_IMAGE_SIDE)
+                self.assertEqual(
+                    [percent for percent, _ in updates],
+                    [42, 64, 76],
+                )
+            finally:
+                bot.USER_DATA = original_user_data
 
 if __name__ == "__main__":
     unittest.main()
