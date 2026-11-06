@@ -95,7 +95,7 @@ TEXTS = {
         "custom_color": "✏️ Ввести название или HEX",
         "export_other": "Другие форматы…",
         "back_export": "↩️ Назад к настройкам",
-        "language_prompt": "Выбери один из оттенков, которые нашлись на фотографии.\nHEX-код — точное значение цвета.",
+        "photo_palette_prompt": "Выбери один из оттенков, которые нашлись на фотографии.\nHEX-код — точное значение цвета.",
         "color_prompt": "Выбери название цвета или введи свой оттенок.",
         "theme_wallpaper": "На макете показаны выбранные обои.",
         "theme_solid": "Пока здесь однотонный фон. Фотографию можно добавить через главное меню.",
@@ -276,7 +276,7 @@ TEXTS = {
         "custom_color": "✏️ Enter a colour name or HEX",
         "export_other": "More formats…",
         "back_export": "↩️ Back to editor",
-        "language_prompt": "Pick one of the shades found in your photo.\nHEX codes show the exact colour values.",
+        "photo_palette_prompt": "Pick one of the shades found in your photo.\nHEX codes show the exact colour values.",
         "color_prompt": "Choose a colour name or enter your own shade.",
         "theme_wallpaper": "The preview is using your selected wallpaper.",
         "theme_solid": "This theme currently has a solid background. You can add a photo from the main menu.",
@@ -422,7 +422,7 @@ def normalize_language(language: str | None) -> str:
     return language if language in SUPPORTED_LANGUAGES else "ru"
 
 
-def text(language: str | None, key: str, **values) -> str:
+def text(language: str | None, key: str, **values) -> str | dict:
     selected = normalize_language(language)
     template = TEXTS[selected].get(key, TEXTS["ru"].get(key, key))
     return template.format(**values) if values else template
