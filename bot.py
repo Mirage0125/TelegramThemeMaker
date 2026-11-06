@@ -16,6 +16,7 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramEntityTooLarge, TelegramNetworkError, TelegramServerError
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -49,6 +50,8 @@ except OSError:
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 TELEGRAM_GET_FILE_TIMEOUT = 120
 TELEGRAM_DOWNLOAD_TIMEOUT = 180
+TELEGRAM_REQUEST_ATTEMPTS = 3
+TELEGRAM_RETRY_BASE_DELAY = 1.0
 MAX_IMAGE_SIDE = 1920
 PALETTE_IMAGE_SIDE = 320
 Image.MAX_IMAGE_PIXELS = 25_000_000
@@ -1606,7 +1609,7 @@ async def update_photo_progress(progress_message: Message, language: str, percen
         await progress_message.edit_text(progress_text, parse_mode=ParseMode.HTML)
     except Exception as exc:
         # Progress is informational; a Telegram edit error must not stop image processing.
-        print(f"Не удалось обновить сообщение прогресса: {exc}")
+        print(f"Unable to update photo progress ({type(exc).__name__}).")
 
 
 async def download_with_progress(progress_message: Message, language: str, downloader):
@@ -1745,34 +1748,62 @@ async def safe_download_image(url: str, progress_callback=None) -> bytes:
     raise ValueError("Слишком много перенаправлений. Скачай изображение и отправь его файлом.")
 
 
+async def retry_telegram_operation(operation, operation_name: str):
+    """Retry temporary Telegram 5xx/network failures with a short exponential backoff."""
+    for attempt in range(1, TELEGRAM_REQUEST_ATTEMPTS + 1):
+        try:
+            return await operation()
+        except TelegramEntityTooLarge:
+            # A size rejection is permanent; retrying the same file cannot help.
+            raise
+        except (TelegramServerError, TelegramNetworkError, asyncio.TimeoutError) as exc:
+            if attempt >= TELEGRAM_REQUEST_ATTEMPTS:
+                raise
+            delay = TELEGRAM_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            # Keep console logging ASCII-only: Windows may use a legacy code page.
+            print(
+                f"Temporary Telegram error during {operation_name} "
+                f"(attempt {attempt}/{TELEGRAM_REQUEST_ATTEMPTS}); "
+                f"retrying in {delay:g}s."
+            )
+            await asyncio.sleep(delay)
+
+
 async def download_telegram_image(message: Message, bot: Bot, progress_callback=None) -> bytes:
     if message.photo:
-        file_obj = await bot.get_file(
-            message.photo[-1].file_id,
-            request_timeout=TELEGRAM_GET_FILE_TIMEOUT,
-        )
+        file_id = message.photo[-1].file_id
     elif message.document:
         doc = message.document
         if not doc.mime_type or not doc.mime_type.startswith("image/"):
             raise ValueError("Это не изображение. Отправь JPG, PNG или WebP.")
         if doc.file_size and doc.file_size > MAX_IMAGE_BYTES:
             raise ValueError("Изображение больше 12 МБ.")
-        file_obj = await bot.get_file(
-            doc.file_id,
-            request_timeout=TELEGRAM_GET_FILE_TIMEOUT,
-        )
+        file_id = doc.file_id
     else:
         raise ValueError("Отправь картинку как фото или как файл.")
 
+    file_obj = await retry_telegram_operation(
+        lambda: bot.get_file(
+            file_id,
+            request_timeout=TELEGRAM_GET_FILE_TIMEOUT,
+        ),
+        "file metadata lookup",
+    )
+
     if file_obj.file_size and file_obj.file_size > MAX_IMAGE_BYTES:
         raise ValueError("Изображение больше 12 МБ.")
-    buffer = ProgressBytesIO(file_obj.file_size, progress_callback)
-    await bot.download_file(
-        file_obj.file_path,
-        destination=buffer,
-        timeout=TELEGRAM_DOWNLOAD_TIMEOUT,
-    )
-    return buffer.getvalue()
+
+    async def download_once():
+        # Use a fresh buffer for every attempt so a partial failed download is discarded.
+        buffer = ProgressBytesIO(file_obj.file_size, progress_callback)
+        await bot.download_file(
+            file_obj.file_path,
+            destination=buffer,
+            timeout=TELEGRAM_DOWNLOAD_TIMEOUT,
+        )
+        return buffer.getvalue()
+
+    return await retry_telegram_operation(download_once, "photo file download")
 
 
 async def show_theme(
@@ -2016,14 +2047,14 @@ async def image_upload(message: Message, state: FSMContext, bot: Bot):
         await apply_image_to_theme(message, state, raw, progress_message)
     except Exception as exc:
         # Catch Telegram transport errors too, so the user never sees a frozen progress message.
-        print(f"Ошибка загрузки/обработки фотографии: {exc}")
+        print(f"Photo upload or processing failed ({type(exc).__name__}).")
         try:
             await progress_message.edit_text(
                 tr(language, "photo_progress_error", error=html.escape(str(exc))),
                 parse_mode=ParseMode.HTML,
             )
         except Exception as edit_exc:
-            print(f"Не удалось показать ошибку обработки фото: {edit_exc}")
+            print(f"Unable to display the photo-processing error ({type(edit_exc).__name__}).")
 
 
 @dp.message(ThemeStates.waiting_image, F.text)
@@ -2046,14 +2077,14 @@ async def image_url(message: Message, state: FSMContext):
         )
         await apply_image_to_theme(message, state, raw, progress_message)
     except Exception as exc:
-        print(f"Ошибка загрузки фотографии по ссылке: {exc}")
+        print(f"Photo URL download failed ({type(exc).__name__}).")
         try:
             await progress_message.edit_text(
                 tr(language, "photo_progress_error", error=html.escape(str(exc))),
                 parse_mode=ParseMode.HTML,
             )
         except Exception as edit_exc:
-            print(f"Не удалось показать ошибку загрузки фото: {edit_exc}")
+            print(f"Unable to display the photo download error ({type(edit_exc).__name__}).")
 
 
 async def apply_image_to_theme(
