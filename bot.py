@@ -1991,6 +1991,7 @@ async def set_named_color(callback: CallbackQuery, state: FSMContext):
         data.get("wallpaper_path"),
         prefix=tr(language, "prefix_field_changed", field=field_label(language, field)),
         image_palette=data.get("image_palette"),
+        language=language,
     )
     await callback.answer()
 
@@ -2072,6 +2073,7 @@ async def set_opacity(callback: CallbackQuery, state: FSMContext):
         data.get("wallpaper_path"),
         prefix=tr(language, "prefix_opacity"),
         image_palette=data.get("image_palette"),
+        language=language,
     )
     await callback.answer()
 
@@ -2242,8 +2244,16 @@ async def back_theme(callback: CallbackQuery, state: FSMContext):
     language = user_language(callback.from_user.id)
     data = await state.get_data()
     theme = data.get("theme", default_theme(language))
-    await show_theme(callback.message, theme, data.get("wallpaper_path"), image_palette=data.get("image_palette"))
+    await show_theme(
+        callback.message,
+        theme,
+        data.get("wallpaper_path"),
+        image_palette=data.get("image_palette"),
+        language=language,
+    )
     await callback.answer()
+
+
 
 
 @dp.callback_query(F.data.startswith("export:"))
