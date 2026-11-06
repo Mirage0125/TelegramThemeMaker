@@ -114,6 +114,32 @@ class ThemeExportTests(unittest.TestCase):
         self.assertTrue(palette)
         self.assertTrue(all(bot.parse_color(color) for color in palette))
 
+    def test_photo_palette_uses_legacy_lanczos_mediancut_sampling(self):
+        stream = io.BytesIO()
+        image = Image.new("RGB", (1000, 500), "#223344")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, 249, 499), fill="#CC5577")
+        draw.rectangle((250, 0, 499, 499), fill="#55AA77")
+        draw.rectangle((500, 0, 749, 499), fill="#DDBB44")
+        image.save(stream, format="PNG")
+
+        original_quantize = Image.Image.quantize
+        observed = {}
+
+        def inspect_quantize(source, *args, **kwargs):
+            observed["size"] = source.size
+            observed["method"] = kwargs.get("method")
+            observed["colors"] = kwargs.get("colors")
+            return original_quantize(source, *args, **kwargs)
+
+        with patch.object(Image.Image, "quantize", new=inspect_quantize):
+            palette = bot.extract_palette(stream.getvalue())
+
+        self.assertEqual(observed["size"], (500, 250))
+        self.assertEqual(observed["method"], Image.Quantize.MEDIANCUT)
+        self.assertEqual(observed["colors"], 8)
+        self.assertTrue(palette)
+
 
     def test_language_picker_and_english_menus(self):
         picker = bot.language_keyboard()
@@ -197,7 +223,7 @@ class ThemeExportTests(unittest.TestCase):
         self.assertEqual(updates, [20, 40, 60, 80, 100])
         self.assertEqual(len(buffer.getvalue()), 100)
 
-    def test_photo_preparation_reuses_image_and_reports_stages(self):
+    def test_photo_preparation_restores_legacy_palette_and_wallpaper_pipeline(self):
         stream = io.BytesIO()
         image = Image.new("RGB", (900, 600), "#223344")
         draw = ImageDraw.Draw(image)
