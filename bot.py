@@ -1617,10 +1617,14 @@ async def download_with_progress(progress_message: Message, language: str, downl
     await update_photo_progress(progress_message, language, 3, "photo_stage_downloading")
     task = asyncio.create_task(downloader(report))
     displayed_percent = 3
-    while not task.done():
+    while not task.done() or not queue.empty():
         try:
             downloaded_percent = await asyncio.wait_for(queue.get(), timeout=0.4)
         except asyncio.TimeoutError:
+            if task.done():
+                await asyncio.sleep(0)
+                if queue.empty():
+                    break
             continue
         # Reserve the first 30% for actual download progress.
         current_percent = 5 + downloaded_percent * 22 // 100
@@ -1656,10 +1660,15 @@ async def prepare_photo_assets_with_progress(
             progress_callback=report,
         )
     )
-    while not task.done():
+    while not task.done() or not queue.empty():
         try:
             percent, stage_key = await asyncio.wait_for(queue.get(), timeout=0.4)
         except asyncio.TimeoutError:
+            if task.done():
+                # Let thread-safe callbacks scheduled just before thread completion run.
+                await asyncio.sleep(0)
+                if queue.empty():
+                    break
             continue
         await update_photo_progress(progress_message, language, percent, stage_key)
 
