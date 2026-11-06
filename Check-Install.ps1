@@ -25,6 +25,7 @@ $requiredFiles = @(
     "BackgroundRunner.py",
     "UpdateManager.py",
     "SQLiteStorage.py",
+    "Localization.py",
     "bot.py",
     "requirements.txt",
     "VERSION.txt",
