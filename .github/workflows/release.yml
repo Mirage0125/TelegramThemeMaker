@@ -86,6 +86,15 @@ jobs:
           cd dist
           zip -qr "../TelegramThemeMaker_v${VERSION}_Windows.zip" TelegramThemeMaker
           cd ..
+          unzip -Z1 "TelegramThemeMaker_v${VERSION}_Windows.zip" > "release-file-list.txt"
+          if grep -q '^TelegramThemeMaker/assets/' release-file-list.txt; then
+            echo "The release ZIP contains the user-owned assets directory."
+            exit 1
+          fi
+          if ! grep -qx 'TelegramThemeMaker/defaults/welcome.png' release-file-list.txt; then
+            echo "The release ZIP is missing defaults/welcome.png."
+            exit 1
+          fi
           sha256sum "TelegramThemeMaker_v${VERSION}_Windows.zip" > "TelegramThemeMaker_v${VERSION}_Windows.zip.sha256"
 
       - name: Publish release
