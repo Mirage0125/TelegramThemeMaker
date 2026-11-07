@@ -1,17 +1,53 @@
 import os
 import subprocess
 import sys
+import io
+from contextlib import redirect_stdout
+from unittest.mock import patch
+
+import BackgroundRunner
 import tempfile
 import unittest
 from pathlib import Path
 
-from BackgroundRunner import acquire_instance_lock
+from BackgroundRunner import AlreadyRunningError, acquire_instance_lock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class InstanceLockTests(unittest.TestCase):
+    def test_early_lock_messages_are_written_to_the_log_file(self):
+        scenarios = (
+            (AlreadyRunningError("already running"), 0, "Запуск пропущен"),
+            (PermissionError("access denied"), 1, "Не удалось получить блокировку запуска"),
+        )
+
+        for failure, expected_code, expected_message in scenarios:
+            with self.subTest(failure=type(failure).__name__):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    log_dir = root / "logs"
+                    log_file = log_dir / "bot.log"
+                    output = io.StringIO()
+
+                    with (
+                        patch.object(BackgroundRunner, "ROOT", root),
+                        patch.object(BackgroundRunner, "LOG_DIR", log_dir),
+                        patch.object(BackgroundRunner, "LOG_FILE", log_file),
+                        patch.object(
+                            BackgroundRunner,
+                            "acquire_instance_lock",
+                            side_effect=failure,
+                        ),
+                    ):
+                        with redirect_stdout(output):
+                            exit_code = BackgroundRunner.main()
+
+                    self.assertEqual(exit_code, expected_code)
+                    self.assertIn(expected_message, log_file.read_text(encoding="utf-8"))
+                    self.assertEqual(output.getvalue(), "")
+
     def test_second_process_cannot_acquire_lock_until_first_exits(self):
         with tempfile.TemporaryDirectory() as directory:
             lock_path = Path(directory) / ".bot.lock"
