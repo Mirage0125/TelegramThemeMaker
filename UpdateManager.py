@@ -36,6 +36,9 @@ PRESERVED_ROOT_ITEMS = {
     "user_data",
     ".bot.lock",
     ".update-state.json",
+    # Isolated, updater-managed dependency set; never replace it from a release ZIP.
+    ".update-packages",
+    ".update-packages.rollback",
     # User-owned images and other local assets must never be replaced by auto-updates.
     "assets",
     "__pycache__",
@@ -170,7 +173,8 @@ def _stage_archive(archive_path: Path, destination: Path, expected_version: str)
                 raise UpdateError("В архиве есть повторяющиеся пути.")
             seen.add(normalized)
 
-            if relative_parts[0].casefold() in PRESERVED_ROOT_ITEMS:
+            root_item = relative_parts[0].casefold()
+            if root_item in PRESERVED_ROOT_ITEMS or root_item.startswith(".update-packages-stage-"):
                 continue
             if relative_parts[0].startswith(".env"):
                 continue
@@ -215,7 +219,12 @@ def _apply_staged_files(root: Path, staged_root: Path, backup_root: Path) -> tup
     try:
         for staged_file in files:
             relative = staged_file.relative_to(staged_root)
-            if relative.parts[0].casefold() in PRESERVED_ROOT_ITEMS or relative.parts[0].casefold().startswith(".env"):
+            root_item = relative.parts[0].casefold()
+            if (
+                root_item in PRESERVED_ROOT_ITEMS
+                or root_item.startswith(".env")
+                or root_item.startswith(".update-packages-stage-")
+            ):
                 continue
             target = root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -242,28 +251,131 @@ def _apply_staged_files(root: Path, staged_root: Path, backup_root: Path) -> tup
     return changed, requirements_changed
 
 
+def recover_dependency_overlay(root: Path, log=None) -> None:
+    """Recover an interrupted directory switch and remove abandoned staging folders."""
+    root = root.resolve()
+    active = root / ".update-packages"
+    backup = root / ".update-packages.rollback"
+
+    if backup.exists():
+        if active.exists():
+            # The new overlay was activated; only cleanup of its old backup was interrupted.
+            shutil.rmtree(backup)
+            if log:
+                _log(log, "Удалена старая резервная копия набора зависимостей.")
+        else:
+            # The process stopped between moving the previous overlay and activating the new one.
+            os.replace(backup, active)
+            if log:
+                _log(log, "Восстановлен предыдущий рабочий набор зависимостей.")
+
+    # The updater holds the installation lock, so no other live installer can own these folders.
+    for staging in root.glob(".update-packages-stage-*"):
+        if staging.is_dir():
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def enable_dependency_overlay(root: Path) -> bool:
+    """Put the isolated dependency set before the base venv packages for bot imports."""
+    overlay = (root / ".update-packages").resolve()
+    if not overlay.is_dir():
+        return False
+
+    import site
+
+    overlay_text = str(overlay)
+    site.addsitedir(overlay_text)  # Also process any .pth files installed by pip.
+    normalized = os.path.normcase(os.path.abspath(overlay_text))
+    sys.path[:] = [
+        entry for entry in sys.path
+        if os.path.normcase(os.path.abspath(entry or os.curdir)) != normalized
+    ]
+    sys.path.insert(0, overlay_text)
+    return True
+
+
+def _activate_dependency_overlay(root: Path, staging: Path, log) -> None:
+    """Switch to a fully installed dependency set, restoring the previous set on failure."""
+    active = root / ".update-packages"
+    backup = root / ".update-packages.rollback"
+    recover_dependency_overlay(root, log)
+
+    had_active = active.exists()
+    if had_active:
+        os.replace(active, backup)
+
+    try:
+        os.replace(staging, active)
+    except OSError as install_error:
+        if had_active and backup.exists():
+            try:
+                os.replace(backup, active)
+            except OSError as rollback_error:
+                raise UpdateError(
+                    "Не удалось активировать новый набор библиотек и восстановить прежний. "
+                    f"Резервная копия сохранена: {backup}. Причина: {rollback_error}"
+                ) from install_error
+        raise UpdateError(
+            f"Не удалось переключить набор библиотек; прежний набор сохранён: {install_error}"
+        ) from install_error
+
+    if backup.exists():
+        try:
+            shutil.rmtree(backup)
+        except OSError as exc:
+            # The active overlay is already valid. A stale backup can be cleaned next start.
+            _log(log, f"Не удалось удалить старую резервную копию зависимостей: {exc}")
+
+
 def _install_requirements(root: Path, log) -> None:
-    command = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-r", str(root / "requirements.txt")]
-    _log(log, "Обновился список библиотек; устанавливаю зависимости в локальное виртуальное окружение…")
-    result = subprocess.run(
-        command,
-        cwd=str(root),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=240,
-        env={**os.environ, "PIP_DISABLE_PIP_VERSION_CHECK": "1"},
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "pip завершился с ошибкой").strip()[-1800:]
-        raise UpdateError("Не удалось обновить библиотеки: " + detail)
+    """Install into a separate overlay so a failed pip run cannot damage the live venv."""
+    requirements = root / "requirements.txt"
+    if not requirements.is_file():
+        raise UpdateError("Не найден requirements.txt для обновления библиотек.")
+
+    staging = Path(tempfile.mkdtemp(prefix=".update-packages-stage-", dir=root))
+    command = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--upgrade",
+        "--ignore-installed",
+        "--target",
+        str(staging),
+        "-r",
+        str(requirements),
+    ]
+    _log(log, "Устанавливаю новые библиотеки в отдельный временный каталог; текущая среда не изменяется…")
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=240,
+            env={**os.environ, "PIP_DISABLE_PIP_VERSION_CHECK": "1"},
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "pip завершился с ошибкой").strip()[-1800:]
+            raise UpdateError("Не удалось подготовить новый набор библиотек; текущий сохранён: " + detail)
+
+        _activate_dependency_overlay(root, staging, log)
+        _log(log, "Новый набор библиотек установлен и активирован. Базовая .venv не изменялась.")
+    finally:
+        # After a successful os.replace the staging path no longer exists.
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _apply_update_if_available_locked(root: Path, log) -> bool:
     """Check for a newer stable release and install it. Return True if updated."""
     root = root.resolve()
+    recover_dependency_overlay(root, log)
     state_path = root / ".update-state.json"
     now = int(time.time())
     try:
