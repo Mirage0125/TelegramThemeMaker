@@ -59,13 +59,21 @@ Image.MAX_IMAGE_PIXELS = 25_000_000
 class ProgressBytesIO(io.BytesIO):
     """A BytesIO download target that reports real byte-based progress."""
 
-    def __init__(self, total_size: int | None, progress_callback=None):
+    def __init__(
+        self,
+        total_size: int | None,
+        progress_callback=None,
+        max_bytes: int = MAX_IMAGE_BYTES,
+    ):
         super().__init__()
         self.total_size = max(0, int(total_size or 0))
         self.progress_callback = progress_callback
+        self.max_bytes = max(0, int(max_bytes))
         self.last_reported_step = 0
 
     def write(self, data: bytes) -> int:
+        if self.tell() + len(data) > self.max_bytes:
+            raise ValueError("Изображение больше 12 МБ.")
         written = super().write(data)
         if self.total_size and self.progress_callback:
             percent = min(100, int(self.tell() * 100 / self.total_size))
@@ -1001,6 +1009,7 @@ def load_android_theme_keys() -> list[str]:
         "chats_sentReadCheck", "chats_menuPhone", "chats_menuPhoneCats", "chat_outSentClockSelected",
         "chat_messagePanelVoiceBackground", "chat_messagePanelVoicePressed", "chat_messagePanelVoiceDelete",
         "chat_messagePanelVoiceDuration", "chat_recordedVoiceBackground", "chat_outUpCall",
+        "chat_inTimeText", "chat_outTimeText",
     })
     return sorted(keys)
 
@@ -1048,7 +1057,8 @@ def android_color_for_key(key: str, theme: dict) -> int:
         "actionbardefaultsearchplaceholder", "chats_date", "chat_status", "profile_status",
         "chat_recordtime", "chat_fieldoverlaytext", "chat_searchpaneltext",
         "chats_muteiconlabel", "chat_outviews", "player_time", "chat_outtimeselectedtext",
-        "chat_intimeselectedtext", "chat_outaudiodurationtext", "chat_inaudiodurationtext",
+        "chat_intimeselectedtext", "chat_intimetext", "chat_outtimetext",
+        "chat_outaudiodurationtext", "chat_inaudiodurationtext",
         "chat_outfileinfotext", "chat_infileinfotext", "chat_outvenueinfotext",
         "chat_invenueinfotext", "chat_secretchatstatustext", "key_graysectiontext",
     }
@@ -1090,7 +1100,7 @@ def android_color_for_key(key: str, theme: dict) -> int:
         "chat_outcontactphonetext", "chat_outaudiotitletext", "chat_inaudiotitletext",
         "chat_outaudioperfomertext", "chat_inaudioperfomertext", "chat_outvenueNametext".lower(),
         "chat_invenueNametext".lower(), "chat_invenueinfoselectedtext", "chat_outvenueinfoselectedtext",
-        "chat_outtimeText".lower(), "chat_intimeText".lower(), "chat_outfileNameText".lower(),
+        "chat_outfileNameText".lower(),
         "chat_infileNameText".lower(), "chat_outcontactphoneSelectedText".lower(),
         "chat_incontactphoneSelectedText".lower(),
     }:
@@ -1389,6 +1399,12 @@ def create_ios_theme(theme: dict) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+def macos_alpha(color: str, opacity: int) -> str:
+    """Format an alpha color as a fractional value for Telegram macOS palettes."""
+    alpha = max(0, min(100, int(opacity))) / 100
+    return f"{color.upper()}: {alpha:.2f}"
+
+
 def create_macos_palette(theme: dict) -> bytes:
     """Create a native Telegram for macOS .palette key/value text file."""
     ensure_text_colors(theme)
@@ -1418,8 +1434,8 @@ def create_macos_palette(theme: dict) -> bytes:
         "accent": accent,
         "redUI": "#E35D6A",
         "greenUI": "#42A878",
-        "blackTransparent": "#000000: 42",
-        "grayTransparent": f"{fg}: 18",
+        "blackTransparent": macos_alpha("#000000", 42),
+        "grayTransparent": macos_alpha(fg, 18),
         "grayUI": muted,
         "darkGrayText": muted,
         "accentSelect": selected,
@@ -1475,10 +1491,10 @@ def create_macos_palette(theme: dict) -> bytes:
         "fileActivityBackgroundBubble_outgoing": accent,
         "fileActivityForegroundBubble_incoming": contrast_color(accent),
         "fileActivityForegroundBubble_outgoing": contrast_color(accent),
-        "waveformBackground": f"{accent}: 35",
+        "waveformBackground": macos_alpha(accent, 35),
         "waveformForeground": accent,
-        "waveformBackgroundBubble_incoming": f"{accent}: 35",
-        "waveformBackgroundBubble_outgoing": f"{accent}: 35",
+        "waveformBackgroundBubble_incoming": macos_alpha(accent, 35),
+        "waveformBackgroundBubble_outgoing": macos_alpha(accent, 35),
         "waveformForegroundBubble_incoming": accent,
         "waveformForegroundBubble_outgoing": accent,
         "chatDateActive": soft_bg,
