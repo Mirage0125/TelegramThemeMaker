@@ -494,8 +494,10 @@ def cleanup_orphaned_wallpapers(
             or not user_dir.name.isdigit()
         ):
             continue
-
         try:
+            # Also reject Windows junctions/reparse directories that resolve outside USER_DATA.
+            if user_dir.resolve().parent != root:
+                continue
             candidates = list(user_dir.glob("wallpaper_*.jpg"))
         except OSError:
             continue
