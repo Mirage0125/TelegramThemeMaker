@@ -54,6 +54,8 @@ TELEGRAM_DOWNLOAD_TIMEOUT = 180
 TELEGRAM_REQUEST_ATTEMPTS = 3
 TELEGRAM_RETRY_BASE_DELAY = 1.0
 MAX_IMAGE_SIDE = 1920
+WALLPAPER_ORPHAN_GRACE_SECONDS = 60 * 60
+WALLPAPER_FILENAME_PATTERN = re.compile(r"wallpaper_[0-9a-f]{12,32}\.jpg\Z", re.IGNORECASE)
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
 
@@ -433,16 +435,134 @@ def contrast_color(background: str) -> str:
     return auto_text_color(background)
 
 
+
+
+def _normalize_wallpaper_reference(value: object, user_data_dir: Path) -> Path | None:
+    """Accept only generated wallpaper paths inside a numeric user folder."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+
+    try:
+        root = user_data_dir.resolve()
+        resolved = candidate.resolve()
+        relative = resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    if (
+        len(relative.parts) != 2
+        or not relative.parts[0].isdigit()
+        or not WALLPAPER_FILENAME_PATTERN.fullmatch(relative.parts[1])
+    ):
+        return None
+    return resolved
+
+
+def cleanup_orphaned_wallpapers(
+    user_data_dir: Path,
+    referenced_paths,
+    *,
+    grace_seconds: int = WALLPAPER_ORPHAN_GRACE_SECONDS,
+    now: float | None = None,
+) -> int:
+    """Remove old generated wallpapers not referenced by any persisted FSM session."""
+    root = Path(user_data_dir).resolve()
+    if not root.is_dir():
+        return 0
+
+    referenced = {
+        normalized
+        for value in referenced_paths
+        if (normalized := _normalize_wallpaper_reference(value, root)) is not None
+    }
+    cutoff = (time.time() if now is None else float(now)) - max(0, int(grace_seconds))
+    removed = 0
+
+    try:
+        user_directories = list(root.iterdir())
+    except OSError:
+        return 0
+
+    for user_dir in user_directories:
+        if (
+            user_dir.is_symlink()
+            or not user_dir.is_dir()
+            or not user_dir.name.isdigit()
+        ):
+            continue
+
+        try:
+            candidates = list(user_dir.glob("wallpaper_*.jpg"))
+        except OSError:
+            continue
+
+        for candidate in candidates:
+            if (
+                candidate.is_symlink()
+                or not candidate.is_file()
+                or not WALLPAPER_FILENAME_PATTERN.fullmatch(candidate.name)
+            ):
+                continue
+            try:
+                resolved = candidate.resolve()
+                if resolved in referenced or candidate.stat().st_mtime > cutoff:
+                    continue
+                candidate.unlink()
+                removed += 1
+            except OSError:
+                # A locked or unreadable file is left for a later cleanup pass.
+                continue
+
+    return removed
+
+
+async def cleanup_unused_wallpapers() -> int:
+    """Read every saved FSM session before deleting any unreferenced wallpaper."""
+    try:
+        sessions = await dp.storage.get_all_data()
+    except Exception as exc:
+        # If session references cannot be read completely, deleting images is unsafe.
+        print(f"Очистка старых обоев пропущена: не удалось прочитать сохранённые сессии ({type(exc).__name__}).")
+        return 0
+
+    references = [
+        session.get("wallpaper_path")
+        for session in sessions
+        if isinstance(session, dict) and session.get("wallpaper_path")
+    ]
+    try:
+        removed = await asyncio.to_thread(
+            cleanup_orphaned_wallpapers,
+            USER_DATA,
+            references,
+        )
+    except Exception as exc:
+        print(f"Очистка старых обоев не выполнена ({type(exc).__name__}).")
+        return 0
+
+    if removed:
+        print(f"Удалено неиспользуемых фотографий-обоев: {removed}.")
+    return removed
+
+
 def save_user_wallpaper(user_id: int, raw: bytes) -> Path:
     user_dir = USER_DATA / str(user_id)
     user_dir.mkdir(parents=True, exist_ok=True)
     # Each theme gets its own file: a later upload must not mutate an older active theme.
     dest = user_dir / f"wallpaper_{uuid.uuid4().hex[:12]}.jpg"
-    with Image.open(io.BytesIO(raw)) as image:
-        validate_image_dimensions(image)
-        image = ImageOps.exif_transpose(image).convert("RGB")
-        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.LANCZOS)
-        image.save(dest, "JPEG", quality=91, optimize=True, progressive=True)
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            validate_image_dimensions(image)
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.LANCZOS)
+            image.save(dest, "JPEG", quality=91, optimize=True, progressive=True)
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
     return dest
 
 
@@ -1938,6 +2058,7 @@ async def start(message: Message, state: FSMContext):
     await state.clear()
     language = user_language(message.from_user.id)
     await state.update_data(theme=default_theme(language), wallpaper_path=None)
+    await cleanup_unused_wallpapers()
     if LANGUAGE_PREFERENCES.has_language(message.from_user.id):
         await send_welcome(message, language)
     else:
@@ -1984,6 +2105,7 @@ async def create_command(message: Message, state: FSMContext):
     language = user_language(message.from_user.id)
     theme = default_theme(language)
     await state.update_data(theme=theme, wallpaper_path=None)
+    await cleanup_unused_wallpapers()
     await show_theme(message, theme, prefix=tr(language, "prefix_create"))
 
 
@@ -1991,6 +2113,7 @@ async def create_command(message: Message, state: FSMContext):
 async def image_command(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(ThemeStates.waiting_image)
+    await cleanup_unused_wallpapers()
     language = user_language(message.from_user.id)
     await message.answer(tr(language, "prompt_image_command"))
 
@@ -2016,6 +2139,7 @@ async def version_command(message: Message):
 @dp.message(Command("cancel"))
 async def cancel_command(message: Message, state: FSMContext):
     await state.clear()
+    await cleanup_unused_wallpapers()
     language = user_language(message.from_user.id)
     await message.answer(tr(language, "cancelled"), reply_markup=main_menu(language))
 
@@ -2045,6 +2169,7 @@ async def home(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     language = user_language(callback.from_user.id)
     await state.update_data(theme=default_theme(language), wallpaper_path=None)
+    await cleanup_unused_wallpapers()
     await send_welcome(callback.message, language)
     await callback.answer()
 
@@ -2055,6 +2180,7 @@ async def create_callback(callback: CallbackQuery, state: FSMContext):
     language = user_language(callback.from_user.id)
     theme = default_theme(language)
     await state.update_data(theme=theme, wallpaper_path=None)
+    await cleanup_unused_wallpapers()
     await show_theme(callback.message, theme, prefix=tr(language, "prefix_create"), language=language)
     await callback.answer()
 
@@ -2063,6 +2189,7 @@ async def create_callback(callback: CallbackQuery, state: FSMContext):
 async def image_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.set_state(ThemeStates.waiting_image)
+    await cleanup_unused_wallpapers()
     language = user_language(callback.from_user.id)
     await callback.message.answer(tr(language, "prompt_image"))
     await callback.answer()
@@ -2155,6 +2282,7 @@ async def apply_image_to_theme(
         )
 
     if not colors:
+        wallpaper.unlink(missing_ok=True)
         error_text = tr(language, "image_no_colors")
         if progress_message:
             await progress_message.edit_text(error_text)
@@ -2171,6 +2299,7 @@ async def apply_image_to_theme(
         wallpaper_path=str(wallpaper),
         image_palette=colors,
     )
+    await cleanup_unused_wallpapers()
     await show_theme(
         message,
         theme,
@@ -2525,6 +2654,7 @@ async def use_preset(callback: CallbackQuery, state: FSMContext):
     ensure_text_colors(theme)
     await state.clear()
     await state.update_data(theme=theme, wallpaper_path=None)
+    await cleanup_unused_wallpapers()
     await show_theme(callback.message, theme, prefix=tr(language, "prefix_preset"), language=language)
     await callback.answer()
 
@@ -2664,6 +2794,7 @@ async def main():
     except RuntimeError as exc:
         print(f"Ошибка запуска: {exc}")
         raise SystemExit(1) from exc
+    await cleanup_unused_wallpapers()
     bot = Bot(TOKEN)
     try:
         await set_user_commands(bot)
