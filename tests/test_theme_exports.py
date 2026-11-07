@@ -357,6 +357,7 @@ class ThemeExportTests(unittest.TestCase):
     def test_macos_palette_encodes_alpha_as_fractional_opacity(self):
         theme = self.theme.copy()
         theme["text"] = "#123456"
+        theme["text_auto"] = False
         theme["accent"] = "#ABCDEF"
         exported = bot.create_macos_palette(theme).decode("utf-8")
         values = dict(
