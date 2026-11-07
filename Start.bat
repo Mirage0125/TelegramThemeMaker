@@ -62,13 +62,19 @@ if exist ".venv\Scripts\python.exe" (
     )
 )
 
-echo [2/3] Installing/updating required libraries...
-".venv\Scripts\python.exe" -m pip --disable-pip-version-check install -r requirements.txt
+echo [2/3] Checking required libraries...
+".venv\Scripts\python.exe" -c "import aiogram, PIL, dotenv, aiohttp" >nul 2>&1
 if errorlevel 1 (
-    echo.
-    echo Could not install libraries. Check your internet connection.
-    pause
-    exit /b 1
+    echo Core libraries are missing; installing the initial environment...
+    ".venv\Scripts\python.exe" -m pip --disable-pip-version-check install -r requirements.txt
+    if errorlevel 1 (
+        echo.
+        echo Could not install libraries. Check your internet connection.
+        pause
+        exit /b 1
+    )
+) else (
+    echo Base environment is ready; dependency updates are handled by the updater.
 )
 
 if not exist ".env" (
