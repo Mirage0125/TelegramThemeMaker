@@ -3,6 +3,7 @@ import io
 import os
 import tempfile
 import time
+import threading
 import unittest
 import zipfile
 from pathlib import Path
@@ -625,6 +626,151 @@ class ThemeExportTests(unittest.TestCase):
                     bot.android_color_for_key(key, theme),
                     bot.signed_argb(theme["muted"]),
                 )
+
+
+    def test_background_photo_task_releases_fsm_lock_for_cancel(self):
+        async def exercise():
+            key = object()
+            state = SimpleNamespace(
+                key=key,
+                set_state=AsyncMock(),
+                get_state=AsyncMock(return_value=bot.ThemeStates.processing_image.state),
+            )
+            message = SimpleNamespace(from_user=SimpleNamespace(id=8080))
+            progress = SimpleNamespace(edit_text=AsyncMock())
+            download_started = asyncio.Event()
+            download_cancelled = asyncio.Event()
+
+            async def blocked_downloader(report):
+                download_started.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    download_cancelled.set()
+                    raise
+
+            isolation = bot.SimpleEventIsolation()
+            async with isolation.lock(key):
+                started = await bot.start_photo_processing(
+                    message,
+                    state,
+                    progress,
+                    "en",
+                    blocked_downloader,
+                    "upload",
+                )
+            self.assertTrue(started)
+            await asyncio.wait_for(download_started.wait(), timeout=1)
+            self.assertIn(key, bot.PHOTO_PROCESSING_TASKS)
+
+            async def cancel_under_same_fsm_lock():
+                async with isolation.lock(key):
+                    await bot.cancel_photo_processing(state)
+
+            await asyncio.wait_for(cancel_under_same_fsm_lock(), timeout=1)
+            self.assertTrue(download_cancelled.is_set())
+            self.assertNotIn(key, bot.PHOTO_PROCESSING_TASKS)
+
+        asyncio.run(exercise())
+
+    def test_cancel_command_stops_the_active_photo_task_and_clears_state(self):
+        async def exercise():
+            key = object()
+            started = asyncio.Event()
+            cancelled = asyncio.Event()
+
+            async def worker():
+                started.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+
+            task = asyncio.create_task(worker())
+            await started.wait()
+            previous = bot.PHOTO_PROCESSING_TASKS.copy()
+            bot.PHOTO_PROCESSING_TASKS.clear()
+            bot.PHOTO_PROCESSING_TASKS[key] = task
+            state = SimpleNamespace(key=key, clear=AsyncMock())
+            message = SimpleNamespace(
+                from_user=SimpleNamespace(id=8181),
+                answer=AsyncMock(),
+            )
+            try:
+                with patch.object(bot, "cleanup_unused_wallpapers", new=AsyncMock()):
+                    await bot.cancel_command(message, state)
+                self.assertTrue(cancelled.is_set())
+                self.assertTrue(task.done())
+                state.clear.assert_awaited_once()
+                message.answer.assert_awaited_once()
+                self.assertNotIn(key, bot.PHOTO_PROCESSING_TASKS)
+            finally:
+                bot.PHOTO_PROCESSING_TASKS.clear()
+                bot.PHOTO_PROCESSING_TASKS.update(previous)
+
+        asyncio.run(exercise())
+
+    def test_download_progress_cancels_its_nested_downloader(self):
+        async def exercise():
+            started = asyncio.Event()
+            cancelled = asyncio.Event()
+            progress = SimpleNamespace(edit_text=AsyncMock())
+
+            async def downloader(report):
+                started.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+
+            task = asyncio.create_task(
+                bot.download_with_progress(progress, "en", downloader)
+            )
+            await asyncio.wait_for(started.wait(), timeout=1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertTrue(cancelled.is_set())
+
+        asyncio.run(exercise())
+
+    def test_cancelled_photo_worker_removes_wallpaper_after_thread_finishes(self):
+        async def exercise(directory):
+            root = Path(directory)
+            started = threading.Event()
+            release = threading.Event()
+            wallpaper = root / "606" / "wallpaper_aaaaaaaaaaaa.jpg"
+            progress = SimpleNamespace(edit_text=AsyncMock())
+
+            def slow_prepare(user_id, raw, progress_callback=None):
+                started.set()
+                release.wait(timeout=5)
+                wallpaper.parent.mkdir(parents=True, exist_ok=True)
+                wallpaper.write_bytes(b"temporary wallpaper")
+                return ["#112233"], wallpaper
+
+            with patch.object(bot, "prepare_photo_assets", new=slow_prepare):
+                task = asyncio.create_task(
+                    bot.prepare_photo_assets_with_progress(
+                        606, b"image", progress, "en"
+                    )
+                )
+                self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+
+                workers = list(bot.PHOTO_PREPARATION_WORKERS)
+                self.assertTrue(workers, "the worker thread must remain tracked after cancellation")
+                release.set()
+                await asyncio.gather(*workers, return_exceptions=True)
+                await asyncio.sleep(0)
+                self.assertFalse(wallpaper.exists())
+
+        with tempfile.TemporaryDirectory() as directory:
+            asyncio.run(exercise(directory))
 
 
 if __name__ == "__main__":
