@@ -528,7 +528,7 @@ async def cleanup_unused_wallpapers() -> int:
         sessions = await dp.storage.get_all_data()
     except Exception as exc:
         # If session references cannot be read completely, deleting images is unsafe.
-        print(f"Очистка старых обоев пропущена: не удалось прочитать сохранённые сессии ({type(exc).__name__}).")
+        print(f"Wallpaper cleanup skipped: unable to read saved sessions ({type(exc).__name__}).")
         return 0
 
     references = [
@@ -543,11 +543,11 @@ async def cleanup_unused_wallpapers() -> int:
             references,
         )
     except Exception as exc:
-        print(f"Очистка старых обоев не выполнена ({type(exc).__name__}).")
+        print(f"Wallpaper cleanup failed ({type(exc).__name__}).")
         return 0
 
     if removed:
-        print(f"Удалено неиспользуемых фотографий-обоев: {removed}.")
+        print(f"Removed unreferenced wallpaper images: {removed}.")
     return removed
 
 
