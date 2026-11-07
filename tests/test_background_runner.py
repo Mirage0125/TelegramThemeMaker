@@ -48,6 +48,34 @@ class InstanceLockTests(unittest.TestCase):
                     self.assertIn(expected_message, log_file.read_text(encoding="utf-8"))
                     self.assertEqual(output.getvalue(), "")
 
+    def test_dependency_overlay_is_loaded_before_base_venv_packages(self):
+        from UpdateManager import enable_dependency_overlay
+
+        original_path = sys.path.copy()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            overlay = root / ".update-packages"
+            overlay.mkdir()
+
+            try:
+                self.assertTrue(enable_dependency_overlay(root))
+                self.assertEqual(Path(sys.path[0]), overlay.resolve())
+
+                # Repeated activation must not add duplicate path entries.
+                self.assertTrue(enable_dependency_overlay(root))
+                normalized = os.path.normcase(os.path.abspath(str(overlay)))
+                occurrences = [
+                    entry for entry in sys.path
+                    if os.path.normcase(os.path.abspath(entry or os.curdir)) == normalized
+                ]
+                self.assertEqual(len(occurrences), 1)
+
+                shutil = __import__("shutil")
+                shutil.rmtree(overlay)
+                self.assertFalse(enable_dependency_overlay(root))
+            finally:
+                sys.path[:] = original_path
+
     def test_second_process_cannot_acquire_lock_until_first_exits(self):
         with tempfile.TemporaryDirectory() as directory:
             lock_path = Path(directory) / ".bot.lock"
