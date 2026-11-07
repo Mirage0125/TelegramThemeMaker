@@ -48,12 +48,22 @@ try:
 except OSError:
     APP_VERSION = "unknown"
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
+MAX_IMAGE_PIXELS = 25_000_000
 TELEGRAM_GET_FILE_TIMEOUT = 120
 TELEGRAM_DOWNLOAD_TIMEOUT = 180
 TELEGRAM_REQUEST_ATTEMPTS = 3
 TELEGRAM_RETRY_BASE_DELAY = 1.0
 MAX_IMAGE_SIDE = 1920
-Image.MAX_IMAGE_PIXELS = 25_000_000
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+
+
+def validate_image_dimensions(image: Image.Image) -> None:
+    """Reject oversized images even when Pillow only emits a decompression warning."""
+    width, height = image.size
+    if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+        raise ValueError(
+            "Разрешение изображения слишком большое. Максимум — 25 мегапикселей."
+        )
 
 
 class ProgressBytesIO(io.BytesIO):
@@ -415,6 +425,7 @@ def save_user_wallpaper(user_id: int, raw: bytes) -> Path:
     # Each theme gets its own file: a later upload must not mutate an older active theme.
     dest = user_dir / f"wallpaper_{uuid.uuid4().hex[:12]}.jpg"
     with Image.open(io.BytesIO(raw)) as image:
+        validate_image_dimensions(image)
         image = ImageOps.exif_transpose(image).convert("RGB")
         image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.LANCZOS)
         image.save(dest, "JPEG", quality=91, optimize=True, progressive=True)
@@ -424,6 +435,7 @@ def save_user_wallpaper(user_id: int, raw: bytes) -> Path:
 def extract_palette(raw: bytes):
     """Use the original 500x500 Lanczos + MEDIANCUT palette extraction."""
     with Image.open(io.BytesIO(raw)) as image:
+        validate_image_dimensions(image)
         image = ImageOps.exif_transpose(image).convert("RGB")
         image.thumbnail((500, 500), Image.Resampling.LANCZOS)
         quantized = image.quantize(colors=8, method=Image.Quantize.MEDIANCUT).convert("RGB")
@@ -1541,7 +1553,7 @@ def create_macos_palette(theme: dict) -> bytes:
         "wallpaper": bg,
     }
     lines = [
-        f"name = {json.dumps(name, ensure_ascii=False)}",
+        f"name = {name}",
         f"shortname = {shortname}",
         f"isDark = {1 if dark else 0}",
         "tinted = 0",
