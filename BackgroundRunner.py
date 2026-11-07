@@ -56,11 +56,11 @@ def main() -> int:
         lock_handle = acquire_instance_lock(ROOT / ".bot.lock")
     except AlreadyRunningError as exc:
         with LOG_FILE.open("a", encoding="utf-8", buffering=1) as log:
-            print(f"\n[{timestamp()}] Запуск пропущен: {exc}")
+            print(f"\n[{timestamp()}] Запуск пропущен: {exc}", file=log)
         return 0
     except Exception:
         with LOG_FILE.open("a", encoding="utf-8", buffering=1) as log:
-            print(f"\n[{timestamp()}] Не удалось получить блокировку запуска:")
+            print(f"\n[{timestamp()}] Не удалось получить блокировку запуска:", file=log)
             traceback.print_exc(file=log)
         return 1
 
@@ -81,20 +81,33 @@ def main() -> int:
                 # Make the already-held lock visible to UpdateManager and bot.py.
                 os.environ[LOCK_ENVIRONMENT_FLAG] = "1"
 
-                # Updating is best-effort, but the instance lock is already held:
-                # two launches can never replace project files at the same time.
+                # The updater handles ordinary download/install failures itself.
+                # Any recovery error escaping it is unsafe, so bot startup must stop.
                 try:
-                    from UpdateManager import apply_update_if_available
+                    from UpdateManager import (
+                        apply_update_if_available,
+                        recover_update_transaction,
+                    )
 
+                    # Restore an interrupted update before version checks or bot imports.
+                    recover_update_transaction(
+                        ROOT, lambda message: print(f"[{timestamp()}] {message}")
+                    )
                     apply_update_if_available(
                         ROOT, lambda message: print(f"[{timestamp()}] {message}")
                     )
                 except Exception as exc:
                     print(
-                        f"[{timestamp()}] Не удалось проверить или установить обновление; "
-                        f"запускаю текущую версию: {exc}"
+                        f"[{timestamp()}] Не удалось безопасно проверить или восстановить обновление; "
+                        f"запуск бота остановлен: {exc}"
                     )
                     traceback.print_exc()
+                    return 1
+
+                from UpdateManager import enable_dependency_overlay
+
+                if enable_dependency_overlay(ROOT):
+                    print("[Updater] Используется изолированный набор обновлённых библиотек.")
 
                 runpy.run_path(str(ROOT / "bot.py"), run_name="__main__")
                 print(f"[{timestamp()}] Процесс бота завершился.")

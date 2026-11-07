@@ -36,6 +36,10 @@ PRESERVED_ROOT_ITEMS = {
     "user_data",
     ".bot.lock",
     ".update-state.json",
+    ".update-transaction",
+    # Isolated, updater-managed dependency set; never replace it from a release ZIP.
+    ".update-packages",
+    ".update-packages.rollback",
     # User-owned images and other local assets must never be replaced by auto-updates.
     "assets",
     "__pycache__",
@@ -105,6 +109,27 @@ def _asset(assets: list[dict], name: str) -> dict | None:
     return next((item for item in assets if item.get("name") == name), None)
 
 
+def _save_update_state(state_path: Path, checked_at: int, log) -> bool:
+    """Persist the check timestamp atomically without misreporting an applied update."""
+    temporary_path = state_path.with_name(state_path.name + ".tmp")
+    payload = json.dumps({"last_successful_check": int(checked_at)}, ensure_ascii=False)
+    try:
+        temporary_path.write_text(payload, encoding="utf-8")
+        os.replace(temporary_path, state_path)
+        return True
+    except OSError as exc:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        _log(
+            log,
+            "Не удалось сохранить время последней проверки; обновление не будет "
+            f"отменено, следующая проверка может повториться: {exc}",
+        )
+        return False
+
+
 def _checksum_value(payload: bytes) -> str:
     text = payload.decode("utf-8", errors="replace").strip()
     match = re.search(r"\b([0-9a-fA-F]{64})\b", text)
@@ -149,7 +174,8 @@ def _stage_archive(archive_path: Path, destination: Path, expected_version: str)
                 raise UpdateError("В архиве есть повторяющиеся пути.")
             seen.add(normalized)
 
-            if relative_parts[0].casefold() in PRESERVED_ROOT_ITEMS:
+            root_item = relative_parts[0].casefold()
+            if root_item in PRESERVED_ROOT_ITEMS or root_item.startswith(".update-packages-stage-"):
                 continue
             if relative_parts[0].startswith(".env"):
                 continue
@@ -183,6 +209,181 @@ def _stage_archive(archive_path: Path, destination: Path, expected_version: str)
     return staged_root
 
 
+
+def _write_transaction_journal(transaction_root: Path, journal: dict) -> None:
+    """Atomically persist the update transaction state before changing live files."""
+    journal_path = transaction_root / "journal.json"
+    temporary_path = transaction_root / "journal.json.tmp"
+    payload = json.dumps(journal, ensure_ascii=False, sort_keys=True)
+    with temporary_path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary_path, journal_path)
+
+
+def _transaction_relative_path(value: str) -> tuple[str, ...]:
+    """Validate a journal path before using it to restore files below the install root."""
+    path = PurePosixPath(value)
+    if (
+        path.is_absolute()
+        or not path.parts
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or path.parts[0].casefold() in PRESERVED_ROOT_ITEMS
+        or path.parts[0].casefold().startswith(".env")
+    ):
+        raise UpdateError("В журнале обновления обнаружен небезопасный путь.")
+    return path.parts
+
+
+def _begin_update_transaction(root: Path, staged_root: Path) -> Path:
+    """Back up every destination and write the recovery journal before live changes."""
+    transaction_root = root / ".update-transaction"
+    if transaction_root.exists():
+        raise UpdateError("Обнаружена незавершённая транзакция обновления.")
+
+    backup_root = transaction_root / "files"
+    backup_root.mkdir(parents=True)
+    entries: list[dict] = []
+
+    for staged_file in sorted(path for path in staged_root.rglob("*") if path.is_file()):
+        relative = staged_file.relative_to(staged_root)
+        root_item = relative.parts[0].casefold()
+        if (
+            root_item in PRESERVED_ROOT_ITEMS
+            or root_item.startswith(".env")
+            or root_item.startswith(".update-packages-stage-")
+        ):
+            continue
+
+        target = root.joinpath(*relative.parts)
+        existed = target.exists()
+        if existed:
+            if target.is_symlink() or not target.is_file():
+                raise UpdateError(f"Нельзя безопасно заменить файл обновления: {relative}")
+            backup_path = backup_root.joinpath(*relative.parts)
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, backup_path)
+
+        entries.append({
+            "path": PurePosixPath(*relative.parts).as_posix(),
+            "existed": existed,
+        })
+
+    overlay = root / ".update-packages"
+    journal = {
+        "format": 1,
+        "phase": "pending",
+        "files": entries,
+        "overlay_existed": overlay.is_dir(),
+        "overlay_update": False,
+    }
+    _write_transaction_journal(transaction_root, journal)
+    return transaction_root
+
+
+def _set_transaction_overlay_update(transaction_root: Path) -> None:
+    journal_path = transaction_root / "journal.json"
+    try:
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise UpdateError("Не удалось прочитать журнал транзакции перед переключением библиотек.") from exc
+    journal["overlay_update"] = True
+    _write_transaction_journal(transaction_root, journal)
+
+
+def recover_update_transaction(root: Path, log=None) -> bool:
+    """Roll back an interrupted update, or finish cleanup after a committed update."""
+    root = root.resolve()
+    transaction_root = root / ".update-transaction"
+    if not transaction_root.exists():
+        return False
+
+    journal_path = transaction_root / "journal.json"
+    if not journal_path.is_file():
+        # No live file is modified until the complete journal has been written.
+        shutil.rmtree(transaction_root)
+        if log:
+            _log(log, "Удалены незавершённые подготовительные файлы транзакции обновления.")
+        return True
+
+    try:
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise UpdateError(
+            "Журнал обновления повреждён; бот не будет запущен, чтобы не использовать смешанную версию."
+        ) from exc
+
+    if journal.get("format") != 1:
+        raise UpdateError("Версия журнала обновления не поддерживается; требуется ручная проверка.")
+    if journal.get("phase") == "committed":
+        shutil.rmtree(transaction_root, ignore_errors=True)
+        if log:
+            _log(log, "Завершена очистка уже применённой транзакции обновления.")
+        return False
+    if journal.get("phase") != "pending":
+        raise UpdateError("Неизвестное состояние транзакции обновления; запуск остановлен.")
+
+    entries = journal.get("files")
+    if not isinstance(entries, list):
+        raise UpdateError("Список файлов в журнале обновления повреждён.")
+
+    backup_root = transaction_root / "files"
+    for entry in reversed(entries):
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            raise UpdateError("Запись файла в журнале обновления повреждена.")
+        parts = _transaction_relative_path(entry["path"])
+        target = root.joinpath(*parts)
+        backup_path = backup_root.joinpath(*parts)
+
+        temporary_target = target.with_name(target.name + ".update-tmp")
+        restore_temporary = target.with_name(target.name + ".update-restore-tmp")
+        temporary_target.unlink(missing_ok=True)
+        restore_temporary.unlink(missing_ok=True)
+
+        if entry.get("existed") is True:
+            if not backup_path.is_file():
+                raise UpdateError(
+                    f"Не найдена резервная копия {entry['path']}; автоматическое восстановление остановлено."
+                )
+            if target.exists() and target.is_dir():
+                raise UpdateError(f"Невозможно восстановить файл поверх каталога: {entry['path']}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            restore_path = target.with_name(target.name + ".update-restore-tmp")
+            shutil.copy2(backup_path, restore_path)
+            os.replace(restore_path, target)
+        elif entry.get("existed") is False:
+            if target.is_dir() and not target.is_symlink():
+                raise UpdateError(f"Невозможно удалить каталог вместо нового файла: {entry['path']}")
+            target.unlink(missing_ok=True)
+        else:
+            raise UpdateError("В журнале обновления отсутствует признак существования файла.")
+
+    if journal.get("overlay_update") is True:
+        active_overlay = root / ".update-packages"
+        previous_overlay = transaction_root / "dependency-overlay-backup"
+        if journal.get("overlay_existed") is True:
+            if previous_overlay.is_dir():
+                if active_overlay.exists():
+                    shutil.rmtree(active_overlay) if active_overlay.is_dir() else active_overlay.unlink()
+                os.replace(previous_overlay, active_overlay)
+            # If the backup does not exist, the old overlay had not yet been moved.
+        elif journal.get("overlay_existed") is False:
+            if active_overlay.exists():
+                shutil.rmtree(active_overlay) if active_overlay.is_dir() else active_overlay.unlink()
+        else:
+            raise UpdateError("В журнале обновления отсутствует состояние прежних библиотек.")
+
+    for staging in root.glob(".update-packages-stage-*"):
+        if staging.is_dir():
+            shutil.rmtree(staging, ignore_errors=True)
+
+    shutil.rmtree(transaction_root)
+    if log:
+        _log(log, "Незавершённое обновление полностью отменено; восстановлена предыдущая версия файлов и библиотек.")
+    return True
+
+
 def _apply_staged_files(root: Path, staged_root: Path, backup_root: Path) -> tuple[list[tuple[Path, Path | None]], bool]:
     changed: list[tuple[Path, Path | None]] = []
     requirements_path = root / "requirements.txt"
@@ -194,15 +395,23 @@ def _apply_staged_files(root: Path, staged_root: Path, backup_root: Path) -> tup
     try:
         for staged_file in files:
             relative = staged_file.relative_to(staged_root)
-            if relative.parts[0].casefold() in PRESERVED_ROOT_ITEMS or relative.parts[0].casefold().startswith(".env"):
+            root_item = relative.parts[0].casefold()
+            if (
+                root_item in PRESERVED_ROOT_ITEMS
+                or root_item.startswith(".env")
+                or root_item.startswith(".update-packages-stage-")
+            ):
                 continue
             target = root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             backup = backup_root / relative
             backup_path: Path | None = None
             if target.exists():
+                if not target.is_file() or target.is_symlink():
+                    raise UpdateError(f"Нельзя безопасно заменить файл обновления: {relative}")
                 backup.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(target, backup)
+                if not backup.exists():
+                    shutil.copy2(target, backup)
                 backup_path = backup
             temporary_target = target.with_name(target.name + ".update-tmp")
             shutil.copy2(staged_file, temporary_target)
@@ -212,7 +421,9 @@ def _apply_staged_files(root: Path, staged_root: Path, backup_root: Path) -> tup
         for target, backup_path in reversed(changed):
             try:
                 if backup_path and backup_path.exists():
-                    os.replace(backup_path, target)
+                    restore_path = target.with_name(target.name + ".update-restore-tmp")
+                    shutil.copy2(backup_path, restore_path)
+                    os.replace(restore_path, target)
                 else:
                     target.unlink(missing_ok=True)
             except OSError:
@@ -221,28 +432,164 @@ def _apply_staged_files(root: Path, staged_root: Path, backup_root: Path) -> tup
     return changed, requirements_changed
 
 
-def _install_requirements(root: Path, log) -> None:
-    command = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-r", str(root / "requirements.txt")]
-    _log(log, "Обновился список библиотек; устанавливаю зависимости в локальное виртуальное окружение…")
-    result = subprocess.run(
-        command,
-        cwd=str(root),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=240,
-        env={**os.environ, "PIP_DISABLE_PIP_VERSION_CHECK": "1"},
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "pip завершился с ошибкой").strip()[-1800:]
-        raise UpdateError("Не удалось обновить библиотеки: " + detail)
+def recover_dependency_overlay(root: Path, log=None) -> None:
+    """Recover an interrupted directory switch and remove abandoned staging folders."""
+    root = root.resolve()
+    active = root / ".update-packages"
+    backup = root / ".update-packages.rollback"
+
+    if backup.exists():
+        if active.exists():
+            # The new overlay was activated; only cleanup of its old backup was interrupted.
+            shutil.rmtree(backup)
+            if log:
+                _log(log, "Удалена старая резервная копия набора зависимостей.")
+        else:
+            # The process stopped between moving the previous overlay and activating the new one.
+            os.replace(backup, active)
+            if log:
+                _log(log, "Восстановлен предыдущий рабочий набор зависимостей.")
+
+    # The updater holds the installation lock, so no other live installer can own these folders.
+    for staging in root.glob(".update-packages-stage-*"):
+        if staging.is_dir():
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def enable_dependency_overlay(root: Path) -> bool:
+    """Put the isolated dependency set before the base venv packages for bot imports."""
+    recover_dependency_overlay(root)
+    overlay = (root / ".update-packages").resolve()
+    if not overlay.is_dir():
+        return False
+
+    import site
+
+    overlay_text = str(overlay)
+    site.addsitedir(overlay_text)  # Also process any .pth files installed by pip.
+
+    def is_overlay_path(entry: str) -> bool:
+        try:
+            # samefile handles Windows case, trailing separators, and equivalent path forms.
+            return os.path.samefile(entry or os.curdir, overlay_text)
+        except (OSError, ValueError):
+            return False
+
+    sys.path[:] = [entry for entry in sys.path if not is_overlay_path(entry)]
+    sys.path.insert(0, overlay_text)
+    return True
+
+
+def _activate_dependency_overlay(
+    root: Path,
+    staging: Path,
+    log,
+    *,
+    backup_path: Path | None = None,
+    keep_backup: bool = False,
+) -> None:
+    """Switch dependency directories, optionally retaining the old set for a wider transaction."""
+    active = root / ".update-packages"
+    backup = backup_path or (root / ".update-packages.rollback")
+
+    if backup.exists():
+        if active.exists():
+            raise UpdateError(f"Резервный каталог зависимостей уже существует: {backup}")
+        os.replace(backup, active)
+
+    had_active = active.exists()
+    if had_active:
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(active, backup)
+
+    try:
+        os.replace(staging, active)
+    except OSError as install_error:
+        if had_active and backup.exists():
+            try:
+                os.replace(backup, active)
+            except OSError as rollback_error:
+                raise UpdateError(
+                    "Не удалось активировать новый набор библиотек и восстановить прежний. "
+                    f"Резервная копия сохранена: {backup}. Причина: {rollback_error}"
+                ) from install_error
+        raise UpdateError(
+            f"Не удалось переключить набор библиотек; прежний набор сохранён: {install_error}"
+        ) from install_error
+
+    if backup.exists() and not keep_backup:
+        try:
+            shutil.rmtree(backup)
+        except OSError as exc:
+            _log(log, f"Не удалось удалить старую резервную копию зависимостей: {exc}")
+
+
+def _install_requirements(
+    root: Path,
+    log,
+    *,
+    requirements_path: Path | None = None,
+    transaction_root: Path | None = None,
+) -> None:
+    """Install into an isolated overlay, retaining rollback data when inside an update transaction."""
+    requirements = requirements_path or (root / "requirements.txt")
+    if not requirements.is_file():
+        raise UpdateError("Не найден requirements.txt для обновления библиотек.")
+
+    staging = Path(tempfile.mkdtemp(prefix=".update-packages-stage-", dir=root))
+    command = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--upgrade",
+        "--ignore-installed",
+        "--target",
+        str(staging),
+        "-r",
+        str(requirements),
+    ]
+    _log(log, "Устанавливаю новые библиотеки в отдельный временный каталог; текущая среда не изменяется…")
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=240,
+            env={**os.environ, "PIP_DISABLE_PIP_VERSION_CHECK": "1"},
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "pip завершился с ошибкой").strip()[-1800:]
+            raise UpdateError("Не удалось подготовить новый набор библиотек; текущий сохранён: " + detail)
+
+        if transaction_root is not None:
+            _set_transaction_overlay_update(transaction_root)
+            _activate_dependency_overlay(
+                root,
+                staging,
+                log,
+                backup_path=transaction_root / "dependency-overlay-backup",
+                keep_backup=True,
+            )
+        else:
+            _activate_dependency_overlay(root, staging, log)
+        _log(log, "Новый набор библиотек установлен и активирован. Базовая .venv не изменялась.")
+    finally:
+        # After a successful os.replace the staging path no longer exists.
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _apply_update_if_available_locked(root: Path, log) -> bool:
     """Check for a newer stable release and install it. Return True if updated."""
     root = root.resolve()
+    recover_update_transaction(root, log)
+    recover_dependency_overlay(root, log)
     state_path = root / ".update-state.json"
     now = int(time.time())
     try:
@@ -273,7 +620,7 @@ def _apply_update_if_available_locked(root: Path, log) -> bool:
 
     if release_version <= current_version:
         _log(log, f"Установлена актуальная версия {current_text}.")
-        state_path.write_text(json.dumps({"last_successful_check": now}, ensure_ascii=False), encoding="utf-8")
+        _save_update_state(state_path, now, log)
         return False
 
     version_label = ".".join(str(part) for part in release_version)
@@ -290,7 +637,7 @@ def _apply_update_if_available_locked(root: Path, log) -> bool:
         return False
 
     temp_dir = Path(tempfile.mkdtemp(prefix="theme-maker-update-"))
-    changed: list[Path] = []
+    transaction_root: Path | None = None
     try:
         archive_path = temp_dir / zip_name
         checksum_payload = _request(checksum_asset["browser_download_url"], max_bytes=16 * 1024)
@@ -302,33 +649,45 @@ def _apply_update_if_available_locked(root: Path, log) -> bool:
         archive_path.write_bytes(archive_payload)
 
         staged_root = _stage_archive(archive_path, temp_dir, version_label)
-        backup_root = temp_dir / "backup"
-        backup_root.mkdir()
-        changed, requirements_changed = _apply_staged_files(root, staged_root, backup_root)
-        if requirements_changed:
-            try:
-                _install_requirements(root, log)
-            except Exception:
-                # Restore project files if dependency installation failed.
-                for target, backup in reversed(changed):
-                    try:
-                        if backup and backup.exists():
-                            os.replace(backup, target)
-                        else:
-                            target.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                raise
+        transaction_root = _begin_update_transaction(root, staged_root)
 
-        state_path.write_text(json.dumps({"last_successful_check": now}, ensure_ascii=False), encoding="utf-8")
+        old_requirements = (root / "requirements.txt").read_bytes()
+        new_requirements = (staged_root / "requirements.txt").read_bytes()
+        requirements_changed = old_requirements != new_requirements
+        if requirements_changed:
+            _install_requirements(
+                root,
+                log,
+                requirements_path=staged_root / "requirements.txt",
+                transaction_root=transaction_root,
+            )
+
+        _apply_staged_files(root, staged_root, transaction_root / "files")
+
+        journal_path = transaction_root / "journal.json"
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        journal["phase"] = "committed"
+        _write_transaction_journal(transaction_root, journal)
+
+        # The committed marker is durable before rollback data is discarded.
+        _save_update_state(state_path, now, log)
+        shutil.rmtree(transaction_root, ignore_errors=True)
         _log(log, f"Обновление установлено: {current_text} → {version_label}.")
         return True
     except Exception as exc:
-        _log(log, f"Обновление не установлено; запуск продолжится на текущих файлах: {exc}")
+        if transaction_root is not None and transaction_root.exists():
+            try:
+                recover_update_transaction(root, log)
+            except Exception as recovery_error:
+                raise UpdateError(
+                    "Не удалось автоматически восстановить прерванное обновление. "
+                    "Резервные данные сохранены; бот не должен запускаться до восстановления. "
+                    f"Причина: {recovery_error}"
+                ) from exc
+        _log(log, f"Обновление не установлено; запуск продолжится на предыдущей версии: {exc}")
         return False
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
-
 
 
 def apply_update_if_available(root: Path, log) -> bool:

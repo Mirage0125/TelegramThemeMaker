@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 import html
 import io
 import ipaddress
@@ -48,24 +49,58 @@ try:
 except OSError:
     APP_VERSION = "unknown"
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
+MAX_IMAGE_PIXELS = 25_000_000
 TELEGRAM_GET_FILE_TIMEOUT = 120
 TELEGRAM_DOWNLOAD_TIMEOUT = 180
 TELEGRAM_REQUEST_ATTEMPTS = 3
 TELEGRAM_RETRY_BASE_DELAY = 1.0
 MAX_IMAGE_SIDE = 1920
-Image.MAX_IMAGE_PIXELS = 25_000_000
+WALLPAPER_ORPHAN_GRACE_SECONDS = 60 * 60
+WALLPAPER_FILENAME_PATTERN = re.compile(r"wallpaper_[0-9a-f]{12,32}\.jpg\Z", re.IGNORECASE)
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+
+
+def validate_image_dimensions(image: Image.Image) -> None:
+    """Reject oversized images even when Pillow only emits a decompression warning."""
+    width, height = image.size
+    if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+        raise ValueError(
+            "Разрешение изображения слишком большое. Максимум — 25 мегапикселей."
+        )
+
+
+class ImageTooLargeError(ValueError):
+    """Raised when an uploaded image exceeds the configured byte limit."""
+
+
+def photo_error_text(language: str, error: Exception, source: str) -> str:
+    """Keep image-upload errors in the user's selected interface language."""
+    if isinstance(error, ImageTooLargeError):
+        return tr(language, "image_too_large")
+    if language == "en":
+        key = "image_url_error" if source == "url" else "image_error"
+        return tr(language, key)
+    return tr(language, "photo_progress_error", error=html.escape(str(error)))
 
 
 class ProgressBytesIO(io.BytesIO):
     """A BytesIO download target that reports real byte-based progress."""
 
-    def __init__(self, total_size: int | None, progress_callback=None):
+    def __init__(
+        self,
+        total_size: int | None,
+        progress_callback=None,
+        max_bytes: int = MAX_IMAGE_BYTES,
+    ):
         super().__init__()
         self.total_size = max(0, int(total_size or 0))
         self.progress_callback = progress_callback
+        self.max_bytes = max(0, int(max_bytes))
         self.last_reported_step = 0
 
     def write(self, data: bytes) -> int:
+        if self.tell() + len(data) > self.max_bytes:
+            raise ImageTooLargeError("Изображение больше 12 МБ.")
         written = super().write(data)
         if self.total_size and self.progress_callback:
             percent = min(100, int(self.tell() * 100 / self.total_size))
@@ -92,6 +127,10 @@ dp = Dispatcher(
     storage=SQLiteStorage(USER_DATA / "fsm.sqlite3"),
     events_isolation=SimpleEventIsolation(),
 )
+
+# Long photo jobs are tracked separately so their event handler can release the FSM lock.
+PHOTO_PROCESSING_TASKS: dict[object, asyncio.Task] = {}
+PHOTO_PREPARATION_WORKERS: set[asyncio.Task] = set()
 
 DEFAULT_THEME = {
     "name": "Моя тема",
@@ -163,6 +202,7 @@ COLOR_BUTTONS = [
 class ThemeStates(StatesGroup):
     waiting_color = State()
     waiting_image = State()
+    processing_image = State()
     waiting_name = State()
 
 
@@ -401,21 +441,143 @@ def contrast_color(background: str) -> str:
     return auto_text_color(background)
 
 
+
+
+def _normalize_wallpaper_reference(value: object, user_data_dir: Path) -> Path | None:
+    """Accept only generated wallpaper paths inside a numeric user folder."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+
+    try:
+        root = user_data_dir.resolve()
+        resolved = candidate.resolve()
+        relative = resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    if (
+        len(relative.parts) != 2
+        or not relative.parts[0].isdigit()
+        or not WALLPAPER_FILENAME_PATTERN.fullmatch(relative.parts[1])
+    ):
+        return None
+    return resolved
+
+
+def cleanup_orphaned_wallpapers(
+    user_data_dir: Path,
+    referenced_paths,
+    *,
+    grace_seconds: int = WALLPAPER_ORPHAN_GRACE_SECONDS,
+    now: float | None = None,
+) -> int:
+    """Remove old generated wallpapers not referenced by any persisted FSM session."""
+    root = Path(user_data_dir).resolve()
+    if not root.is_dir():
+        return 0
+
+    referenced = {
+        normalized
+        for value in referenced_paths
+        if (normalized := _normalize_wallpaper_reference(value, root)) is not None
+    }
+    cutoff = (time.time() if now is None else float(now)) - max(0, int(grace_seconds))
+    removed = 0
+
+    try:
+        user_directories = list(root.iterdir())
+    except OSError:
+        return 0
+
+    for user_dir in user_directories:
+        if (
+            user_dir.is_symlink()
+            or not user_dir.is_dir()
+            or not user_dir.name.isdigit()
+        ):
+            continue
+        try:
+            # Also reject Windows junctions/reparse directories that resolve outside USER_DATA.
+            if user_dir.resolve().parent != root:
+                continue
+            candidates = list(user_dir.glob("wallpaper_*.jpg"))
+        except OSError:
+            continue
+
+        for candidate in candidates:
+            if (
+                candidate.is_symlink()
+                or not candidate.is_file()
+                or not WALLPAPER_FILENAME_PATTERN.fullmatch(candidate.name)
+            ):
+                continue
+            try:
+                resolved = candidate.resolve()
+                if resolved in referenced or candidate.stat().st_mtime > cutoff:
+                    continue
+                candidate.unlink()
+                removed += 1
+            except OSError:
+                # A locked or unreadable file is left for a later cleanup pass.
+                continue
+
+    return removed
+
+
+async def cleanup_unused_wallpapers() -> int:
+    """Read every saved FSM session before deleting any unreferenced wallpaper."""
+    try:
+        sessions = await dp.storage.get_all_data()
+    except Exception as exc:
+        # If session references cannot be read completely, deleting images is unsafe.
+        print(f"Wallpaper cleanup skipped: unable to read saved sessions ({type(exc).__name__}).")
+        return 0
+
+    references = [
+        session.get("wallpaper_path")
+        for session in sessions
+        if isinstance(session, dict) and session.get("wallpaper_path")
+    ]
+    try:
+        removed = await asyncio.to_thread(
+            cleanup_orphaned_wallpapers,
+            USER_DATA,
+            references,
+        )
+    except Exception as exc:
+        print(f"Wallpaper cleanup failed ({type(exc).__name__}).")
+        return 0
+
+    if removed:
+        print(f"Removed unreferenced wallpaper images: {removed}.")
+    return removed
+
+
 def save_user_wallpaper(user_id: int, raw: bytes) -> Path:
     user_dir = USER_DATA / str(user_id)
     user_dir.mkdir(parents=True, exist_ok=True)
     # Each theme gets its own file: a later upload must not mutate an older active theme.
     dest = user_dir / f"wallpaper_{uuid.uuid4().hex[:12]}.jpg"
-    with Image.open(io.BytesIO(raw)) as image:
-        image = ImageOps.exif_transpose(image).convert("RGB")
-        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.LANCZOS)
-        image.save(dest, "JPEG", quality=91, optimize=True, progressive=True)
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            validate_image_dimensions(image)
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.LANCZOS)
+            image.save(dest, "JPEG", quality=91, optimize=True, progressive=True)
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
     return dest
 
 
 def extract_palette(raw: bytes):
     """Use the original 500x500 Lanczos + MEDIANCUT palette extraction."""
     with Image.open(io.BytesIO(raw)) as image:
+        validate_image_dimensions(image)
         image = ImageOps.exif_transpose(image).convert("RGB")
         image.thumbnail((500, 500), Image.Resampling.LANCZOS)
         quantized = image.quantize(colors=8, method=Image.Quantize.MEDIANCUT).convert("RGB")
@@ -673,7 +835,7 @@ def create_desktop_colors(theme: dict) -> dict:
     message_fg = theme.get("message_text", fg)
     incoming = alpha_hex(theme["incoming"], theme.get("incoming_opacity", 100))
     outgoing = alpha_hex(theme["outgoing"], theme.get("outgoing_opacity", 100))
-    muted = fg
+    muted = theme.get("muted", mix(fg, bg, 0.28))
     soft_bg = mix(bg, fg, 0.08)
     active_bg = mix(bg, accent, 0.28)
     soft_accent = mix(accent, bg, 0.22)
@@ -1001,6 +1163,7 @@ def load_android_theme_keys() -> list[str]:
         "chats_sentReadCheck", "chats_menuPhone", "chats_menuPhoneCats", "chat_outSentClockSelected",
         "chat_messagePanelVoiceBackground", "chat_messagePanelVoicePressed", "chat_messagePanelVoiceDelete",
         "chat_messagePanelVoiceDuration", "chat_recordedVoiceBackground", "chat_outUpCall",
+        "chat_inTimeText", "chat_outTimeText",
     })
     return sorted(keys)
 
@@ -1035,8 +1198,7 @@ def android_color_for_key(key: str, theme: dict) -> int:
         "dialogtextblack", "actionbardefaulttitle", "actionbardefaultsubmenuitem",
         "actionbardefaultarchivedtitle", "chats_name", "chats_secretname", "chats_menuname",
         "chats_menuitemtext", "profile_title", "profile_name", "chat_messagepaneltext",
-        "chat_topPanelTitle".lower(), "chat_outcontactnametext", "chat_incontactnametext",
-        "chat_outcontactphonetext", "chat_incontactphonetext", "chats_menuitemtext",
+        "chat_topPanelTitle".lower(), "chats_menuitemtext",
         "actionbarTabunactivetext".lower(),
     }
     muted_text = {
@@ -1049,7 +1211,8 @@ def android_color_for_key(key: str, theme: dict) -> int:
         "actionbardefaultsearchplaceholder", "chats_date", "chat_status", "profile_status",
         "chat_recordtime", "chat_fieldoverlaytext", "chat_searchpaneltext",
         "chats_muteiconlabel", "chat_outviews", "player_time", "chat_outtimeselectedtext",
-        "chat_intimeselectedtext", "chat_outaudiodurationtext", "chat_inaudiodurationtext",
+        "chat_intimeselectedtext", "chat_intimetext", "chat_outtimetext",
+        "chat_outaudiodurationtext", "chat_inaudiodurationtext",
         "chat_outfileinfotext", "chat_infileinfotext", "chat_outvenueinfotext",
         "chat_invenueinfotext", "chat_secretchatstatustext", "key_graysectiontext",
     }
@@ -1091,7 +1254,7 @@ def android_color_for_key(key: str, theme: dict) -> int:
         "chat_outcontactphonetext", "chat_outaudiotitletext", "chat_inaudiotitletext",
         "chat_outaudioperfomertext", "chat_inaudioperfomertext", "chat_outvenueNametext".lower(),
         "chat_invenueNametext".lower(), "chat_invenueinfoselectedtext", "chat_outvenueinfoselectedtext",
-        "chat_outtimeText".lower(), "chat_intimeText".lower(), "chat_outfileNameText".lower(),
+        "chat_outfileNameText".lower(),
         "chat_infileNameText".lower(), "chat_outcontactphoneSelectedText".lower(),
         "chat_incontactphoneSelectedText".lower(),
     }:
@@ -1139,10 +1302,15 @@ def android_color_for_key(key: str, theme: dict) -> int:
     )):
         return signed_argb(accent)
 
+    # Shadow slots are ARGB overlays, not bubble fills. A subtle black alpha
+    # preserves visible elevation on both light and dark themes.
+    if key_l in {"chat_messagepanelshadow", "chat_inbubbleshadow", "chat_outbubbleshadow"}:
+        return signed_argb("#000000", 20)
+
     # Bubbles and media cards retain their distinct incoming/outgoing base colours.
-    if key_l in {"chat_inbubble", "chat_inbubbleshadow", "chat_infilebackground", "chat_incontactbackground"}:
+    if key_l in {"chat_inbubble", "chat_infilebackground", "chat_incontactbackground"}:
         return signed_argb(incoming, theme.get("incoming_opacity", 100))
-    if key_l in {"chat_outbubble", "chat_outbubbleshadow", "chat_outfilebackground", "chat_outcontactbackground"}:
+    if key_l in {"chat_outbubble", "chat_outfilebackground", "chat_outcontactbackground"}:
         return signed_argb(outgoing, theme.get("outgoing_opacity", 100))
     if key_l in {"chat_inbubbleselected", "chat_outbubbleselected", "chat_infilebackgroundselected", "chat_outfilebackgroundselected", "chat_selectedbackground"}:
         return signed_argb(accent, 42)
@@ -1385,6 +1553,12 @@ def create_ios_theme(theme: dict) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+def macos_alpha(color: str, opacity: int) -> str:
+    """Format an alpha color as a fractional value for Telegram macOS palettes."""
+    alpha = max(0, min(100, int(opacity))) / 100
+    return f"{color.upper()}: {alpha:.2f}"
+
+
 def create_macos_palette(theme: dict) -> bytes:
     """Create a native Telegram for macOS .palette key/value text file."""
     ensure_text_colors(theme)
@@ -1414,8 +1588,8 @@ def create_macos_palette(theme: dict) -> bytes:
         "accent": accent,
         "redUI": "#E35D6A",
         "greenUI": "#42A878",
-        "blackTransparent": "#000000: 42",
-        "grayTransparent": f"{fg}: 18",
+        "blackTransparent": macos_alpha("#000000", 42),
+        "grayTransparent": macos_alpha(fg, 18),
         "grayUI": muted,
         "darkGrayText": muted,
         "accentSelect": selected,
@@ -1437,8 +1611,15 @@ def create_macos_palette(theme: dict) -> bytes:
         "monospacedCodeBubble_outgoing": accent,
         "selectTextBubble_incoming": contrast_color(accent),
         "selectTextBubble_outgoing": contrast_color(accent),
-        "bubbleBackground_incoming": incoming,
-        "bubbleBackground_outgoing": outgoing,
+        # Telegram macOS parses incoming alpha as a fractional value after a colon.
+        # Outgoing bubble backgrounds use a dedicated hex-string parser that reads
+        # the alpha byte from an 8-digit #RRGGBBAA value.
+        "bubbleBackground_incoming": macos_alpha(
+            incoming, theme.get("incoming_opacity", 100)
+        ),
+        "bubbleBackground_outgoing": alpha_hex(
+            outgoing, theme.get("outgoing_opacity", 100)
+        ),
         "bubbleBorder_incoming": border,
         "bubbleBorder_outgoing": outgoing,
         "bubbleBackgroundHighlight_incoming": selected,
@@ -1471,10 +1652,10 @@ def create_macos_palette(theme: dict) -> bytes:
         "fileActivityBackgroundBubble_outgoing": accent,
         "fileActivityForegroundBubble_incoming": contrast_color(accent),
         "fileActivityForegroundBubble_outgoing": contrast_color(accent),
-        "waveformBackground": f"{accent}: 35",
+        "waveformBackground": macos_alpha(accent, 35),
         "waveformForeground": accent,
-        "waveformBackgroundBubble_incoming": f"{accent}: 35",
-        "waveformBackgroundBubble_outgoing": f"{accent}: 35",
+        "waveformBackgroundBubble_incoming": macos_alpha(accent, 35),
+        "waveformBackgroundBubble_outgoing": macos_alpha(accent, 35),
         "waveformForegroundBubble_incoming": accent,
         "waveformForegroundBubble_outgoing": accent,
         "chatDateActive": soft_bg,
@@ -1514,7 +1695,7 @@ def create_macos_palette(theme: dict) -> bytes:
         "wallpaper": bg,
     }
     lines = [
-        f"name = {json.dumps(name, ensure_ascii=False)}",
+        f"name = {name}",
         f"shortname = {shortname}",
         f"isDark = {1 if dark else 0}",
         "tinted = 0",
@@ -1534,7 +1715,7 @@ def create_tgx_theme(theme: dict) -> bytes:
     outgoing = alpha_hex(theme["outgoing"], theme.get("outgoing_opacity", 100))
     values = [
         "!", f"name: {json.dumps(theme.get('name', 'Theme Maker'), ensure_ascii=False)}",
-        f"time: {int(time.time())}", 'author: "Theme Maker"', "@", "bubbleCorner: 19",
+        f"time: {int(time.time())}", "@", "bubbleCorner: 19",
         "bubbleOutline: 1", "parentTheme, wallpaperUsageId: 2", "#",
         f"background, chatSeparator, fileAttach: {bg}",
         f"badge, bubbleOut_progress, chatListAction, chatSendButton, online, seekDone, ticks, ticksRead: {accent}",
@@ -1594,7 +1775,7 @@ async def update_photo_progress(progress_message: Message, language: str, percen
 
 
 async def download_with_progress(progress_message: Message, language: str, downloader):
-    """Run an async downloader while reflecting byte-based progress in Telegram."""
+    """Run an async downloader and always stop it when the parent job is cancelled."""
     queue: asyncio.Queue[int] = asyncio.Queue()
 
     def report(percent: int):
@@ -1603,34 +1784,40 @@ async def download_with_progress(progress_message: Message, language: str, downl
     await update_photo_progress(progress_message, language, 3, "photo_stage_downloading")
     task = asyncio.create_task(downloader(report))
     displayed_percent = 3
-    while not task.done() or not queue.empty():
-        try:
-            downloaded_percent = await asyncio.wait_for(queue.get(), timeout=0.4)
-        except asyncio.TimeoutError:
-            if task.done():
-                await asyncio.sleep(0)
-                if queue.empty():
-                    break
-            continue
-        # Reserve the first 30% for actual download progress.
-        current_percent = 5 + downloaded_percent * 22 // 100
-        if current_percent > displayed_percent:
-            displayed_percent = current_percent
-            await update_photo_progress(
-                progress_message, language, displayed_percent, "photo_stage_downloading"
-            )
+    try:
+        while not task.done() or not queue.empty():
+            try:
+                downloaded_percent = await asyncio.wait_for(queue.get(), timeout=0.4)
+            except asyncio.TimeoutError:
+                if task.done():
+                    await asyncio.sleep(0)
+                    if queue.empty():
+                        break
+                continue
+            # Reserve the first 30% for actual download progress.
+            current_percent = 5 + downloaded_percent * 22 // 100
+            if current_percent > displayed_percent:
+                displayed_percent = current_percent
+                await update_photo_progress(
+                    progress_message, language, displayed_percent, "photo_stage_downloading"
+                )
 
-    result = await task
-    while not queue.empty():
-        downloaded_percent = queue.get_nowait()
-        current_percent = 5 + downloaded_percent * 22 // 100
-        if current_percent > displayed_percent:
-            displayed_percent = current_percent
-            await update_photo_progress(
-                progress_message, language, displayed_percent, "photo_stage_downloading"
-            )
-    await update_photo_progress(progress_message, language, 30, "photo_stage_analyzing")
-    return result
+        result = await task
+        while not queue.empty():
+            downloaded_percent = queue.get_nowait()
+            current_percent = 5 + downloaded_percent * 22 // 100
+            if current_percent > displayed_percent:
+                displayed_percent = current_percent
+                await update_photo_progress(
+                    progress_message, language, current_percent, "photo_stage_downloading"
+                )
+        await update_photo_progress(progress_message, language, 30, "photo_stage_analyzing")
+        return result
+    except asyncio.CancelledError:
+        task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+        raise
 
 
 async def prepare_photo_assets_with_progress(
@@ -1639,14 +1826,14 @@ async def prepare_photo_assets_with_progress(
     progress_message: Message,
     language: str,
 ) -> tuple[list[str], Path]:
-    """Run Pillow work off the event loop and relay actual processing stages."""
+    """Run Pillow work off-loop and remove its output if cancellation wins the race."""
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
 
     def report(percent: int, stage_key: str):
         loop.call_soon_threadsafe(queue.put_nowait, (percent, stage_key))
 
-    task = asyncio.create_task(
+    worker_task = asyncio.create_task(
         asyncio.to_thread(
             prepare_photo_assets,
             user_id,
@@ -1654,23 +1841,58 @@ async def prepare_photo_assets_with_progress(
             progress_callback=report,
         )
     )
-    while not task.done() or not queue.empty():
-        try:
-            percent, stage_key = await asyncio.wait_for(queue.get(), timeout=0.4)
-        except asyncio.TimeoutError:
-            if task.done():
-                # Let thread-safe callbacks scheduled just before thread completion run.
-                await asyncio.sleep(0)
-                if queue.empty():
-                    break
-            continue
-        await update_photo_progress(progress_message, language, percent, stage_key)
+    PHOTO_PREPARATION_WORKERS.add(worker_task)
+    worker_cancelled = False
+    worker_result_cleaned = False
 
-    result = await task
-    while not queue.empty():
-        percent, stage_key = queue.get_nowait()
-        await update_photo_progress(progress_message, language, percent, stage_key)
-    return result
+    def cleanup_cancelled_result(done_task: asyncio.Task):
+        nonlocal worker_result_cleaned
+        if not worker_cancelled or worker_result_cleaned or done_task.cancelled():
+            return
+        try:
+            result = done_task.result()
+            wallpaper = result[1]
+        except (Exception, asyncio.CancelledError, IndexError, TypeError):
+            return
+        if isinstance(wallpaper, Path):
+            try:
+                wallpaper.unlink(missing_ok=True)
+            except OSError as exc:
+                print(f"Cancelled photo cleanup could not remove its temporary file ({type(exc).__name__}).")
+        worker_result_cleaned = True
+
+    def worker_finished(done_task: asyncio.Task):
+        PHOTO_PREPARATION_WORKERS.discard(done_task)
+        cleanup_cancelled_result(done_task)
+        if not done_task.cancelled():
+            # Retrieve a possible exception even when the parent was cancelled.
+            done_task.exception()
+
+    worker_task.add_done_callback(worker_finished)
+    try:
+        while not worker_task.done() or not queue.empty():
+            try:
+                percent, stage_key = await asyncio.wait_for(queue.get(), timeout=0.4)
+            except asyncio.TimeoutError:
+                if worker_task.done():
+                    # Let callbacks scheduled immediately before thread completion run.
+                    await asyncio.sleep(0)
+                    if queue.empty():
+                        break
+                continue
+            await update_photo_progress(progress_message, language, percent, stage_key)
+
+        result = await asyncio.shield(worker_task)
+        while not queue.empty():
+            percent, stage_key = queue.get_nowait()
+            await update_photo_progress(progress_message, language, percent, stage_key)
+        return result
+    except asyncio.CancelledError:
+        worker_cancelled = True
+        cleanup_cancelled_result(worker_task)
+        # Pillow runs in a worker thread and cannot be force-stopped. Its result
+        # callback removes any wallpaper it finishes writing after this cancellation.
+        raise
 
 
 async def safe_download_image(url: str, progress_callback=None) -> bytes:
@@ -1712,13 +1934,13 @@ async def safe_download_image(url: str, progress_callback=None) -> bytes:
                     raise ValueError("Это не прямая ссылка на файл картинки. Скачай изображение и отправь его файлом.")
                 length = int(response.headers.get("Content-Length", "0") or 0)
                 if length > MAX_IMAGE_BYTES:
-                    raise ValueError("Изображение больше 12 МБ.")
+                    raise ImageTooLargeError("Изображение больше 12 МБ.")
                 data = bytearray()
                 last_reported_step = 0
                 async for chunk in response.content.iter_chunked(64 * 1024):
                     data.extend(chunk)
                     if len(data) > MAX_IMAGE_BYTES:
-                        raise ValueError("Изображение больше 12 МБ.")
+                        raise ImageTooLargeError("Изображение больше 12 МБ.")
                     if progress_callback and length > 0:
                         percent = min(100, int(len(data) * 100 / length))
                         step = percent // 20
@@ -1758,7 +1980,7 @@ async def download_telegram_image(message: Message, bot: Bot, progress_callback=
         if not doc.mime_type or not doc.mime_type.startswith("image/"):
             raise ValueError("Это не изображение. Отправь JPG, PNG или WebP.")
         if doc.file_size and doc.file_size > MAX_IMAGE_BYTES:
-            raise ValueError("Изображение больше 12 МБ.")
+            raise ImageTooLargeError("Изображение больше 12 МБ.")
         file_id = doc.file_id
     else:
         raise ValueError("Отправь картинку как фото или как файл.")
@@ -1772,7 +1994,7 @@ async def download_telegram_image(message: Message, bot: Bot, progress_callback=
     )
 
     if file_obj.file_size and file_obj.file_size > MAX_IMAGE_BYTES:
-        raise ValueError("Изображение больше 12 МБ.")
+        raise ImageTooLargeError("Изображение больше 12 МБ.")
 
     async def download_once():
         # Use a fresh buffer for every attempt so a partial failed download is discarded.
@@ -1882,10 +2104,21 @@ async def set_user_commands(bot: Bot):
 
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
+    await cancel_photo_processing(state)
     await state.clear()
     language = user_language(message.from_user.id)
     await state.update_data(theme=default_theme(language), wallpaper_path=None)
-    await send_language_prompt(message)
+    await cleanup_unused_wallpapers()
+    if LANGUAGE_PREFERENCES.has_language(message.from_user.id):
+        await send_welcome(message, language)
+    else:
+        await send_language_prompt(message)
+
+
+@dp.callback_query(ThemeStates.processing_image)
+async def photo_processing_callback_busy(callback: CallbackQuery):
+    language = user_language(callback.from_user.id)
+    await callback.answer(tr(language, "photo_processing_cancel_hint"), show_alert=True)
 
 
 @dp.callback_query(F.data == "language")
@@ -1924,29 +2157,35 @@ async def select_language(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(Command("create"))
 async def create_command(message: Message, state: FSMContext):
+    await cancel_photo_processing(state)
     await state.clear()
     language = user_language(message.from_user.id)
     theme = default_theme(language)
     await state.update_data(theme=theme, wallpaper_path=None)
+    await cleanup_unused_wallpapers()
     await show_theme(message, theme, prefix=tr(language, "prefix_create"))
 
 
 @dp.message(Command("fromphoto"))
 async def image_command(message: Message, state: FSMContext):
+    await cancel_photo_processing(state)
     await state.clear()
     await state.set_state(ThemeStates.waiting_image)
+    await cleanup_unused_wallpapers()
     language = user_language(message.from_user.id)
     await message.answer(tr(language, "prompt_image_command"))
 
 
 @dp.message(Command("catalog"))
 async def catalog_command(message: Message, state: FSMContext):
+    await cancel_photo_processing(state)
     await state.set_state(None)
     await show_catalog(message)
 
 
 @dp.message(Command("help"))
 async def help_command(message: Message, state: FSMContext):
+    await cancel_photo_processing(state)
     await state.set_state(None)
     await send_help(message)
 
@@ -1957,11 +2196,128 @@ async def version_command(message: Message):
     await message.answer(tr(language, "version_text", version=html.escape(APP_VERSION)), parse_mode=ParseMode.HTML)
 
 
+async def cancel_photo_processing(state: FSMContext) -> bool:
+    """Cancel the user's background photo task without waiting for an FSM lock it owns."""
+    key = state.key
+    task = PHOTO_PROCESSING_TASKS.get(key)
+    if task is None:
+        return False
+    if not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            print(f"Photo task stopped with an error during cancellation ({type(exc).__name__}).")
+    if PHOTO_PROCESSING_TASKS.get(key) is task:
+        PHOTO_PROCESSING_TASKS.pop(key, None)
+    return True
+
+
+async def run_photo_processing(
+    message: Message,
+    state: FSMContext,
+    progress_message: Message,
+    language: str,
+    downloader,
+    source: str,
+) -> None:
+    """Background owner of image download, processing, and preview generation."""
+    current_task = asyncio.current_task()
+    try:
+        raw = await download_with_progress(progress_message, language, downloader)
+        if await state.get_state() != ThemeStates.processing_image.state:
+            return
+        await apply_image_to_theme(
+            message,
+            state,
+            raw,
+            progress_message,
+            expected_state=ThemeStates.processing_image.state,
+        )
+        # Validation can return normally without applying a theme (for example,
+        # an oversized payload or an image with no usable colors). Do not leave
+        # the persisted FSM session marked as actively processing in that case.
+        if await state.get_state() == ThemeStates.processing_image.state:
+            await state.set_state(ThemeStates.waiting_image)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.wait_for(
+                progress_message.edit_text(tr(language, "photo_cancelled")),
+                timeout=2,
+            )
+        except Exception:
+            pass
+        raise
+    except Exception as exc:
+        print(f"Photo {source} processing failed ({type(exc).__name__}).")
+        try:
+            await progress_message.edit_text(
+                photo_error_text(language, exc, source),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as edit_exc:
+            print(f"Unable to display the photo-processing error ({type(edit_exc).__name__}).")
+        try:
+            if await state.get_state() == ThemeStates.processing_image.state:
+                await state.set_state(ThemeStates.waiting_image)
+        except Exception as state_exc:
+            print(f"Unable to restore photo input state ({type(state_exc).__name__}).")
+    finally:
+        if PHOTO_PROCESSING_TASKS.get(state.key) is current_task:
+            PHOTO_PROCESSING_TASKS.pop(state.key, None)
+
+
+async def start_photo_processing(
+    message: Message,
+    state: FSMContext,
+    progress_message: Message,
+    language: str,
+    downloader,
+    source: str,
+) -> bool:
+    """Start photo work as a separate task and release the update's FSM lock."""
+    key = state.key
+    active_task = PHOTO_PROCESSING_TASKS.get(key)
+    if active_task is not None and not active_task.done():
+        await progress_message.edit_text(tr(language, "photo_already_processing"))
+        return False
+
+    await state.set_state(ThemeStates.processing_image)
+    task = asyncio.create_task(
+        run_photo_processing(
+            message,
+            state,
+            progress_message,
+            language,
+            downloader,
+            source,
+        )
+    )
+    PHOTO_PROCESSING_TASKS[key] = task
+
+    def forget_finished_task(done_task: asyncio.Task):
+        if PHOTO_PROCESSING_TASKS.get(key) is done_task:
+            PHOTO_PROCESSING_TASKS.pop(key, None)
+
+    task.add_done_callback(forget_finished_task)
+    return True
+
+
 @dp.message(Command("cancel"))
 async def cancel_command(message: Message, state: FSMContext):
+    await cancel_photo_processing(state)
     await state.clear()
+    await cleanup_unused_wallpapers()
     language = user_language(message.from_user.id)
     await message.answer(tr(language, "cancelled"), reply_markup=main_menu(language))
+
+
+@dp.message(ThemeStates.processing_image)
+async def photo_processing_busy(message: Message):
+    language = user_language(message.from_user.id)
+    await message.answer(tr(language, "photo_processing_cancel_hint"))
 
 
 async def send_help(message: Message, language: str | None = None):
@@ -1989,6 +2345,7 @@ async def home(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     language = user_language(callback.from_user.id)
     await state.update_data(theme=default_theme(language), wallpaper_path=None)
+    await cleanup_unused_wallpapers()
     await send_welcome(callback.message, language)
     await callback.answer()
 
@@ -1999,6 +2356,7 @@ async def create_callback(callback: CallbackQuery, state: FSMContext):
     language = user_language(callback.from_user.id)
     theme = default_theme(language)
     await state.update_data(theme=theme, wallpaper_path=None)
+    await cleanup_unused_wallpapers()
     await show_theme(callback.message, theme, prefix=tr(language, "prefix_create"), language=language)
     await callback.answer()
 
@@ -2007,6 +2365,7 @@ async def create_callback(callback: CallbackQuery, state: FSMContext):
 async def image_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.set_state(ThemeStates.waiting_image)
+    await cleanup_unused_wallpapers()
     language = user_language(callback.from_user.id)
     await callback.message.answer(tr(language, "prompt_image"))
     await callback.answer()
@@ -2019,23 +2378,14 @@ async def image_upload(message: Message, state: FSMContext, bot: Bot):
         tr(language, "photo_progress", percent=3, stage=tr(language, "photo_stage_downloading")),
         parse_mode=ParseMode.HTML,
     )
-    try:
-        raw = await download_with_progress(
-            progress_message,
-            language,
-            lambda report: download_telegram_image(message, bot, report),
-        )
-        await apply_image_to_theme(message, state, raw, progress_message)
-    except Exception as exc:
-        # Catch Telegram transport errors too, so the user never sees a frozen progress message.
-        print(f"Photo upload or processing failed ({type(exc).__name__}).")
-        try:
-            await progress_message.edit_text(
-                tr(language, "photo_progress_error", error=html.escape(str(exc))),
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception as edit_exc:
-            print(f"Unable to display the photo-processing error ({type(edit_exc).__name__}).")
+    await start_photo_processing(
+        message,
+        state,
+        progress_message,
+        language,
+        lambda report: download_telegram_image(message, bot, report),
+        "upload",
+    )
 
 
 @dp.message(ThemeStates.waiting_image, F.text)
@@ -2050,22 +2400,14 @@ async def image_url(message: Message, state: FSMContext):
         tr(language, "photo_progress", percent=3, stage=tr(language, "photo_stage_downloading")),
         parse_mode=ParseMode.HTML,
     )
-    try:
-        raw = await download_with_progress(
-            progress_message,
-            language,
-            lambda report: safe_download_image(url, report),
-        )
-        await apply_image_to_theme(message, state, raw, progress_message)
-    except Exception as exc:
-        print(f"Photo URL download failed ({type(exc).__name__}).")
-        try:
-            await progress_message.edit_text(
-                tr(language, "photo_progress_error", error=html.escape(str(exc))),
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception as edit_exc:
-            print(f"Unable to display the photo download error ({type(edit_exc).__name__}).")
+    await start_photo_processing(
+        message,
+        state,
+        progress_message,
+        language,
+        lambda report: safe_download_image(url, report),
+        "url",
+    )
 
 
 async def apply_image_to_theme(
@@ -2073,57 +2415,75 @@ async def apply_image_to_theme(
     state: FSMContext,
     raw: bytes,
     progress_message: Message | None = None,
+    expected_state: str | None = None,
 ):
     language = user_language(message.from_user.id)
-    if len(raw) > MAX_IMAGE_BYTES:
-        error_text = tr(language, "image_too_large")
+    wallpaper: Path | None = None
+    try:
+        if len(raw) > MAX_IMAGE_BYTES:
+            error_text = tr(language, "image_too_large")
+            if progress_message:
+                await progress_message.edit_text(error_text)
+            else:
+                await message.answer(error_text)
+            return
+
         if progress_message:
-            await progress_message.edit_text(error_text)
+            await update_photo_progress(progress_message, language, 32, "photo_stage_analyzing")
+            colors, wallpaper = await prepare_photo_assets_with_progress(
+                message.from_user.id,
+                raw,
+                progress_message,
+                language,
+            )
         else:
-            await message.answer(error_text)
-        return
+            colors, wallpaper = await asyncio.to_thread(
+                prepare_photo_assets,
+                message.from_user.id,
+                raw,
+            )
 
-    if progress_message:
-        await update_photo_progress(progress_message, language, 32, "photo_stage_analyzing")
-        colors, wallpaper = await prepare_photo_assets_with_progress(
-            message.from_user.id,
-            raw,
-            progress_message,
-            language,
+        if not colors:
+            error_text = tr(language, "image_no_colors")
+            if progress_message:
+                await progress_message.edit_text(error_text)
+            else:
+                await message.answer(error_text)
+            return
+
+        # A user may have switched modes while a worker thread was finishing.
+        # Never let an obsolete photo job overwrite the newer FSM session.
+        if expected_state and await state.get_state() != expected_state:
+            return
+
+        theme = create_photo_theme(colors)
+        theme["name"] = tr(language, "default_theme_name")
+        await state.clear()
+        await state.update_data(
+            theme=theme,
+            photo_theme_original=theme.copy(),
+            wallpaper_path=str(wallpaper),
+            image_palette=colors,
         )
-    else:
-        colors, wallpaper = await asyncio.to_thread(
-            prepare_photo_assets,
-            message.from_user.id,
-            raw,
+        # The persisted FSM session now owns the wallpaper reference.
+        wallpaper = None
+        data = await state.get_data()
+        await cleanup_unused_wallpapers()
+        await show_theme(
+            message,
+            theme,
+            data.get("wallpaper_path"),
+            prefix=tr(language, "prefix_photo"),
+            image_palette=colors,
+            language=language,
+            progress_message=progress_message,
         )
-
-    if not colors:
-        error_text = tr(language, "image_no_colors")
-        if progress_message:
-            await progress_message.edit_text(error_text)
-        else:
-            await message.answer(error_text)
-        return
-
-    theme = create_photo_theme(colors)
-    theme["name"] = tr(language, "default_theme_name")
-    await state.clear()
-    await state.update_data(
-        theme=theme,
-        photo_theme_original=theme.copy(),
-        wallpaper_path=str(wallpaper),
-        image_palette=colors,
-    )
-    await show_theme(
-        message,
-        theme,
-        str(wallpaper),
-        prefix=tr(language, "prefix_photo"),
-        image_palette=colors,
-        language=language,
-        progress_message=progress_message,
-    )
+    finally:
+        if wallpaper is not None:
+            try:
+                wallpaper.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 @dp.callback_query(F.data.startswith("field:"))
@@ -2469,6 +2829,7 @@ async def use_preset(callback: CallbackQuery, state: FSMContext):
     ensure_text_colors(theme)
     await state.clear()
     await state.update_data(theme=theme, wallpaper_path=None)
+    await cleanup_unused_wallpapers()
     await show_theme(callback.message, theme, prefix=tr(language, "prefix_preset"), language=language)
     await callback.answer()
 
@@ -2602,12 +2963,27 @@ def acquire_instance_lock():
     INSTANCE_LOCK_HANDLE = handle
 
 
+async def recover_interrupted_photo_processing() -> int:
+    """Restore photo sessions left in processing state by a previous bot process."""
+    storage = dp.storage
+    if not isinstance(storage, SQLiteStorage):
+        raise RuntimeError("Photo-session recovery requires the configured SQLite storage.")
+    return await storage.recover_interrupted_state(
+        ThemeStates.processing_image.state,
+        ThemeStates.waiting_image.state,
+    )
+
+
 async def main():
     try:
         acquire_instance_lock()
     except RuntimeError as exc:
         print(f"Ошибка запуска: {exc}")
         raise SystemExit(1) from exc
+    recovered_photo_sessions = await recover_interrupted_photo_processing()
+    if recovered_photo_sessions:
+        print(f"Восстановлено незавершённых загрузок фотографий: {recovered_photo_sessions}.")
+    await cleanup_unused_wallpapers()
     bot = Bot(TOKEN)
     try:
         await set_user_commands(bot)

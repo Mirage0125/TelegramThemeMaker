@@ -38,6 +38,15 @@ class LanguagePreferences:
             ).fetchone()
         return row[0] if row and row[0] in SUPPORTED_LANGUAGES else "ru"
 
+    def has_language(self, user_id: int) -> bool:
+        """Return whether the user explicitly selected a language before."""
+        with closing(sqlite3.connect(self.database_path, timeout=10)) as connection:
+            row = connection.execute(
+                "SELECT 1 FROM user_languages WHERE user_id = ?",
+                (int(user_id),),
+            ).fetchone()
+        return row is not None
+
     def set_language(self, user_id: int, language: str) -> None:
         if language not in SUPPORTED_LANGUAGES:
             raise ValueError(f"Unsupported language: {language!r}")
@@ -136,6 +145,9 @@ TEXTS = {
         ),
         "photo_progress": "<b>Загрузка: {percent}%</b>\n{stage}",
         "photo_progress_error": "Не получилось обработать фото: {error}",
+        "photo_cancelled": "Обработку фотографии остановил. Можешь прислать другое изображение.",
+        "photo_processing_cancel_hint": "Фотография ещё обрабатывается. Отправь /cancel, чтобы остановить.",
+        "photo_already_processing": "Фотография уже обрабатывается. Дождись завершения или отправь /cancel.",
         "photo_stage_downloading": "Получаю изображение…",
         "photo_stage_analyzing": "Проверяю изображение…",
         "photo_stage_palette": "Подбираю цвета по фотографии…",
@@ -325,6 +337,9 @@ TEXTS = {
         ),
         "photo_progress": "<b>Loading: {percent}%</b>\n{stage}",
         "photo_progress_error": "Couldn't process the photo: {error}",
+        "photo_cancelled": "Photo processing was cancelled. You can send another image.",
+        "photo_processing_cancel_hint": "The photo is still processing. Send /cancel to stop it.",
+        "photo_already_processing": "A photo is already being processed. Wait or send /cancel.",
         "photo_stage_downloading": "Receiving the image…",
         "photo_stage_analyzing": "Checking the image…",
         "photo_stage_palette": "Picking colours from the photo…",
