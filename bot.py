@@ -681,7 +681,7 @@ def create_desktop_colors(theme: dict) -> dict:
     message_fg = theme.get("message_text", fg)
     incoming = alpha_hex(theme["incoming"], theme.get("incoming_opacity", 100))
     outgoing = alpha_hex(theme["outgoing"], theme.get("outgoing_opacity", 100))
-    muted = fg
+    muted = theme.get("muted", mix(fg, bg, 0.28))
     soft_bg = mix(bg, fg, 0.08)
     active_bg = mix(bg, accent, 0.28)
     soft_accent = mix(accent, bg, 0.22)
@@ -1457,8 +1457,15 @@ def create_macos_palette(theme: dict) -> bytes:
         "monospacedCodeBubble_outgoing": accent,
         "selectTextBubble_incoming": contrast_color(accent),
         "selectTextBubble_outgoing": contrast_color(accent),
-        "bubbleBackground_incoming": incoming,
-        "bubbleBackground_outgoing": outgoing,
+        # Telegram macOS parses incoming alpha as a fractional value after a colon.
+        # Outgoing bubble backgrounds use a dedicated hex-string parser that reads
+        # the alpha byte from an 8-digit #RRGGBBAA value.
+        "bubbleBackground_incoming": macos_alpha(
+            incoming, theme.get("incoming_opacity", 100)
+        ),
+        "bubbleBackground_outgoing": alpha_hex(
+            outgoing, theme.get("outgoing_opacity", 100)
+        ),
         "bubbleBorder_incoming": border,
         "bubbleBorder_outgoing": outgoing,
         "bubbleBackgroundHighlight_incoming": selected,
