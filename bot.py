@@ -1035,8 +1035,7 @@ def android_color_for_key(key: str, theme: dict) -> int:
         "dialogtextblack", "actionbardefaulttitle", "actionbardefaultsubmenuitem",
         "actionbardefaultarchivedtitle", "chats_name", "chats_secretname", "chats_menuname",
         "chats_menuitemtext", "profile_title", "profile_name", "chat_messagepaneltext",
-        "chat_topPanelTitle".lower(), "chat_outcontactnametext", "chat_incontactnametext",
-        "chat_outcontactphonetext", "chat_incontactphonetext", "chats_menuitemtext",
+        "chat_topPanelTitle".lower(), "chats_menuitemtext",
         "actionbarTabunactivetext".lower(),
     }
     muted_text = {
@@ -1139,10 +1138,15 @@ def android_color_for_key(key: str, theme: dict) -> int:
     )):
         return signed_argb(accent)
 
+    # Shadow slots are ARGB overlays, not bubble fills. A subtle black alpha
+    # preserves visible elevation on both light and dark themes.
+    if key_l in {"chat_messagepanelshadow", "chat_inbubbleshadow", "chat_outbubbleshadow"}:
+        return signed_argb("#000000", 20)
+
     # Bubbles and media cards retain their distinct incoming/outgoing base colours.
-    if key_l in {"chat_inbubble", "chat_inbubbleshadow", "chat_infilebackground", "chat_incontactbackground"}:
+    if key_l in {"chat_inbubble", "chat_infilebackground", "chat_incontactbackground"}:
         return signed_argb(incoming, theme.get("incoming_opacity", 100))
-    if key_l in {"chat_outbubble", "chat_outbubbleshadow", "chat_outfilebackground", "chat_outcontactbackground"}:
+    if key_l in {"chat_outbubble", "chat_outfilebackground", "chat_outcontactbackground"}:
         return signed_argb(outgoing, theme.get("outgoing_opacity", 100))
     if key_l in {"chat_inbubbleselected", "chat_outbubbleselected", "chat_infilebackgroundselected", "chat_outfilebackgroundselected", "chat_selectedbackground"}:
         return signed_argb(accent, 42)
@@ -1534,7 +1538,7 @@ def create_tgx_theme(theme: dict) -> bytes:
     outgoing = alpha_hex(theme["outgoing"], theme.get("outgoing_opacity", 100))
     values = [
         "!", f"name: {json.dumps(theme.get('name', 'Theme Maker'), ensure_ascii=False)}",
-        f"time: {int(time.time())}", 'author: "Theme Maker"', "@", "bubbleCorner: 19",
+        f"time: {int(time.time())}", "@", "bubbleCorner: 19",
         "bubbleOutline: 1", "parentTheme, wallpaperUsageId: 2", "#",
         f"background, chatSeparator, fileAttach: {bg}",
         f"badge, bubbleOut_progress, chatListAction, chatSendButton, online, seekDone, ticks, ticksRead: {accent}",
