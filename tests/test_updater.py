@@ -3,8 +3,17 @@ import unittest
 from unittest.mock import patch
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
-from UpdateManager import PRESERVED_ROOT_ITEMS, _safe_member_path, _save_update_state, _stage_archive
+from UpdateManager import (
+    PRESERVED_ROOT_ITEMS,
+    UpdateError,
+    _install_requirements,
+    _safe_member_path,
+    _save_update_state,
+    _stage_archive,
+    recover_dependency_overlay,
+)
 
 
 class UpdaterSafetyTests(unittest.TestCase):
@@ -51,6 +60,117 @@ class UpdaterSafetyTests(unittest.TestCase):
             self.assertFalse(state_path.exists())
             self.assertFalse(temporary_path.exists())
             self.assertTrue(any("обновление не будет отменено" in item for item in messages))
+
+    def test_failed_pip_install_keeps_previous_dependency_overlay_and_venv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "requirements.txt").write_text("example-package==1.0\n", encoding="utf-8")
+            active = root / ".update-packages"
+            active.mkdir()
+            (active / "previous_package.py").write_text("VERSION = 'old'\n", encoding="utf-8")
+            venv_package = root / ".venv" / "Lib" / "site-packages"
+            venv_package.mkdir(parents=True)
+            (venv_package / "keep.txt").write_text("base environment", encoding="utf-8")
+            messages = []
+
+            def fail_after_partial_install(command, **kwargs):
+                target = Path(command[command.index("--target") + 1])
+                (target / "partially_installed.py").write_text("BROKEN = True\n", encoding="utf-8")
+                self.assertIn("--ignore-installed", command)
+                self.assertIn(str(root / "requirements.txt"), command)
+                return SimpleNamespace(returncode=1, stderr="simulated pip failure", stdout="")
+
+            with patch("UpdateManager.subprocess.run", side_effect=fail_after_partial_install):
+                with self.assertRaisesRegex(UpdateError, "текущий сохранён"):
+                    _install_requirements(root, messages.append)
+
+            self.assertEqual(
+                (active / "previous_package.py").read_text(encoding="utf-8"),
+                "VERSION = 'old'\n",
+            )
+            self.assertFalse((active / "partially_installed.py").exists())
+            self.assertEqual(
+                (venv_package / "keep.txt").read_text(encoding="utf-8"),
+                "base environment",
+            )
+            self.assertEqual(list(root.glob(".update-packages-stage-*")), [])
+            self.assertTrue(any("отдельный временный каталог" in item for item in messages))
+
+    def test_successful_pip_install_atomically_replaces_dependency_overlay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "requirements.txt").write_text("example-package==2.0\n", encoding="utf-8")
+            active = root / ".update-packages"
+            active.mkdir()
+            (active / "previous_package.py").write_text("VERSION = 'old'\n", encoding="utf-8")
+
+            def successful_install(command, **kwargs):
+                target = Path(command[command.index("--target") + 1])
+                (target / "new_package.py").write_text("VERSION = 'new'\n", encoding="utf-8")
+                return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+            with patch("UpdateManager.subprocess.run", side_effect=successful_install):
+                _install_requirements(root, lambda message: None)
+
+            self.assertTrue((active / "new_package.py").is_file())
+            self.assertFalse((active / "previous_package.py").exists())
+            self.assertFalse((root / ".update-packages.rollback").exists())
+            self.assertEqual(list(root.glob(".update-packages-stage-*")), [])
+
+    def test_failed_overlay_switch_restores_the_previous_dependency_set(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "requirements.txt").write_text("example-package==2.0\n", encoding="utf-8")
+            active = root / ".update-packages"
+            active.mkdir()
+            (active / "previous_package.py").write_text("VERSION = 'old'\n", encoding="utf-8")
+            original_replace = __import__("os").replace
+            replace_calls = 0
+
+            def fail_second_replace(source, destination):
+                nonlocal replace_calls
+                replace_calls += 1
+                if replace_calls == 2:
+                    raise OSError("simulated activation failure")
+                return original_replace(source, destination)
+
+            def successful_install(command, **kwargs):
+                target = Path(command[command.index("--target") + 1])
+                (target / "new_package.py").write_text("VERSION = 'new'\n", encoding="utf-8")
+                return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+            with (
+                patch("UpdateManager.subprocess.run", side_effect=successful_install),
+                patch("UpdateManager.os.replace", side_effect=fail_second_replace),
+            ):
+                with self.assertRaisesRegex(UpdateError, "прежний набор сохранён"):
+                    _install_requirements(root, lambda message: None)
+
+            self.assertEqual(replace_calls, 3)
+            self.assertEqual(
+                (active / "previous_package.py").read_text(encoding="utf-8"),
+                "VERSION = 'old'\n",
+            )
+            self.assertFalse((active / "new_package.py").exists())
+            self.assertFalse((root / ".update-packages.rollback").exists())
+            self.assertEqual(list(root.glob(".update-packages-stage-*")), [])
+
+    def test_interrupted_overlay_switch_recovers_previous_set_and_cleans_staging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backup = root / ".update-packages.rollback"
+            backup.mkdir()
+            (backup / "previous_package.py").write_text("VERSION = 'old'\n", encoding="utf-8")
+            abandoned = root / ".update-packages-stage-abandoned"
+            abandoned.mkdir()
+            (abandoned / "partial.py").write_text("BROKEN = True\n", encoding="utf-8")
+
+            recover_dependency_overlay(root, lambda message: None)
+
+            active = root / ".update-packages"
+            self.assertTrue((active / "previous_package.py").is_file())
+            self.assertFalse(backup.exists())
+            self.assertFalse(abandoned.exists())
 
     def test_unsafe_archive_paths_are_rejected(self):
         for path in ("../outside.txt", "/absolute.txt", "TelegramThemeMaker/../../outside.txt"):
