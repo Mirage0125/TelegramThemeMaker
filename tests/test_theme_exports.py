@@ -316,5 +316,37 @@ class ThemeExportTests(unittest.TestCase):
             self.assertTrue(any("76%" in item for item in edits))
 
 
+    def test_android_contact_text_and_shadow_roles_are_mapped_correctly(self):
+        theme = self.theme.copy()
+        theme["text"] = "#112233"
+        theme["message_text"] = "#AABBCC"
+
+        for key in (
+            "chat_inContactNameText",
+            "chat_outContactNameText",
+            "chat_inContactPhoneText",
+            "chat_outContactPhoneText",
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    bot.android_color_for_key(key, theme),
+                    bot.signed_argb(theme["message_text"]),
+                )
+
+        expected_shadow = bot.signed_argb("#000000", 20)
+        for key in (
+            "chat_messagePanelShadow",
+            "chat_inBubbleShadow",
+            "chat_outBubbleShadow",
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(bot.android_color_for_key(key, theme), expected_shadow)
+
+    def test_telegram_x_export_does_not_emit_invalid_hard_coded_author(self):
+        exported = bot.create_tgx_theme(self.theme).decode("utf-8")
+        self.assertNotIn("author:", exported)
+        self.assertIn("bubbleIn_background", exported)
+
+
 if __name__ == "__main__":
     unittest.main()
