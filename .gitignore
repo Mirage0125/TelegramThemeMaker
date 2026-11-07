@@ -13,6 +13,7 @@ logs/
 .update-packages/
 .update-packages.rollback/
 .update-packages-stage-*/
+.update-transaction/
 *.log
 .DS_Store
 Thumbs.db
