@@ -1,9 +1,10 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 from pathlib import Path
 
-from UpdateManager import PRESERVED_ROOT_ITEMS, _safe_member_path, _stage_archive
+from UpdateManager import PRESERVED_ROOT_ITEMS, _safe_member_path, _save_update_state, _stage_archive
 
 
 class UpdaterSafetyTests(unittest.TestCase):
@@ -29,6 +30,27 @@ class UpdaterSafetyTests(unittest.TestCase):
             self.assertTrue((staged / "bot.py").exists())
             self.assertEqual((staged / "defaults" / "welcome.png").read_bytes(), b"default image")
             self.assertFalse((staged / "assets" / "welcome.png").exists())
+
+    def test_update_state_write_failure_does_not_raise_or_leave_partial_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_path = root / ".update-state.json"
+            temporary_path = root / ".update-state.json.tmp"
+            messages = []
+
+            self.assertTrue(_save_update_state(state_path, 123456, messages.append))
+            self.assertEqual(
+                __import__("json").loads(state_path.read_text(encoding="utf-8")),
+                {"last_successful_check": 123456},
+            )
+
+            state_path.unlink()
+            with patch("UpdateManager.os.replace", side_effect=OSError("disk full")):
+                self.assertFalse(_save_update_state(state_path, 123457, messages.append))
+
+            self.assertFalse(state_path.exists())
+            self.assertFalse(temporary_path.exists())
+            self.assertTrue(any("обновление не будет отменено" in item for item in messages))
 
     def test_unsafe_archive_paths_are_rejected(self):
         for path in ("../outside.txt", "/absolute.txt", "TelegramThemeMaker/../../outside.txt"):
