@@ -44,6 +44,7 @@ class UpdaterSafetyTests(unittest.TestCase):
                 archive.writestr("TelegramThemeMaker/.update-packages/old_package.py", "OLD = True")
                 archive.writestr("TelegramThemeMaker/.update-packages.rollback/backup.py", "BACKUP = True")
                 archive.writestr("TelegramThemeMaker/.update-packages-stage-abandoned/partial.py", "BROKEN = True")
+                archive.writestr("TelegramThemeMaker/.update-transaction/journal.json", "PENDING")
 
             staged = _stage_archive(archive_path, root / "stage", "3.9.0")
             self.assertTrue((staged / "bot.py").exists())
@@ -52,6 +53,7 @@ class UpdaterSafetyTests(unittest.TestCase):
             self.assertFalse((staged / ".update-packages").exists())
             self.assertFalse((staged / ".update-packages.rollback").exists())
             self.assertFalse((staged / ".update-packages-stage-abandoned").exists())
+            self.assertFalse((staged / ".update-transaction").exists())
 
     def test_update_state_write_failure_does_not_raise_or_leave_partial_marker(self):
         with tempfile.TemporaryDirectory() as directory:
