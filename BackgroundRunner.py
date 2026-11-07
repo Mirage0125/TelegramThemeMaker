@@ -84,17 +84,25 @@ def main() -> int:
                 # Updating is best-effort, but the instance lock is already held:
                 # two launches can never replace project files at the same time.
                 try:
-                    from UpdateManager import apply_update_if_available
+                    from UpdateManager import (
+                        apply_update_if_available,
+                        recover_update_transaction,
+                    )
 
+                    # Restore an interrupted update before version checks or bot imports.
+                    recover_update_transaction(
+                        ROOT, lambda message: print(f"[{timestamp()}] {message}")
+                    )
                     apply_update_if_available(
                         ROOT, lambda message: print(f"[{timestamp()}] {message}")
                     )
                 except Exception as exc:
                     print(
-                        f"[{timestamp()}] Не удалось проверить или установить обновление; "
-                        f"запускаю текущую версию: {exc}"
+                        f"[{timestamp()}] Не удалось безопасно проверить или восстановить обновление; "
+                        f"запуск бота остановлен: {exc}"
                     )
                     traceback.print_exc()
+                    return 1
 
                 from UpdateManager import enable_dependency_overlay
 
