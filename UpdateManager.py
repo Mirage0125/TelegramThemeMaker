@@ -286,11 +286,13 @@ def enable_dependency_overlay(root: Path) -> bool:
 
     overlay_text = str(overlay)
     site.addsitedir(overlay_text)  # Also process any .pth files installed by pip.
-    normalized = os.path.normcase(os.path.abspath(overlay_text))
-    sys.path[:] = [
-        entry for entry in sys.path
-        if os.path.normcase(os.path.abspath(entry or os.curdir)) != normalized
-    ]
+
+    def normalized_path(value: str) -> str:
+        # Windows may retain a trailing separator in site.added paths.
+        return os.path.normcase(os.path.normpath(os.path.abspath(value or os.curdir)))
+
+    normalized = normalized_path(overlay_text)
+    sys.path[:] = [entry for entry in sys.path if normalized_path(entry) != normalized]
     sys.path.insert(0, overlay_text)
     return True
 
