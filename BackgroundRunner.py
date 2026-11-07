@@ -81,8 +81,8 @@ def main() -> int:
                 # Make the already-held lock visible to UpdateManager and bot.py.
                 os.environ[LOCK_ENVIRONMENT_FLAG] = "1"
 
-                # Updating is best-effort, but the instance lock is already held:
-                # two launches can never replace project files at the same time.
+                # The updater handles ordinary download/install failures itself.
+                # Any recovery error escaping it is unsafe, so bot startup must stop.
                 try:
                     from UpdateManager import (
                         apply_update_if_available,
