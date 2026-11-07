@@ -96,6 +96,11 @@ def main() -> int:
                     )
                     traceback.print_exc()
 
+                from UpdateManager import enable_dependency_overlay
+
+                if enable_dependency_overlay(ROOT):
+                    print("[Updater] Используется изолированный набор обновлённых библиотек.")
+
                 runpy.run_path(str(ROOT / "bot.py"), run_name="__main__")
                 print(f"[{timestamp()}] Процесс бота завершился.")
                 return 0
