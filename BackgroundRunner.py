@@ -56,11 +56,11 @@ def main() -> int:
         lock_handle = acquire_instance_lock(ROOT / ".bot.lock")
     except AlreadyRunningError as exc:
         with LOG_FILE.open("a", encoding="utf-8", buffering=1) as log:
-            print(f"\n[{timestamp()}] Запуск пропущен: {exc}")
+            print(f"\n[{timestamp()}] Запуск пропущен: {exc}", file=log)
         return 0
     except Exception:
         with LOG_FILE.open("a", encoding="utf-8", buffering=1) as log:
-            print(f"\n[{timestamp()}] Не удалось получить блокировку запуска:")
+            print(f"\n[{timestamp()}] Не удалось получить блокировку запуска:", file=log)
             traceback.print_exc(file=log)
         return 1
 
