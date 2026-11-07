@@ -70,6 +70,7 @@ jobs:
             --exclude='.update-packages/' \
             --exclude='.update-packages.rollback/' \
             --exclude='.update-packages-stage-*/' \
+            --exclude='.update-transaction/' \
             --exclude='*.pyc' \
             --exclude='*.log'
           if [[ ! -s assets/welcome.png ]]; then
