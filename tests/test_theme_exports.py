@@ -117,6 +117,12 @@ class ThemeExportTests(unittest.TestCase):
         colors = bot.create_desktop_colors(self.theme)
         self.assertEqual(colors["windowSubTextFg"], "#123456")
 
+    def test_desktop_computes_default_muted_text_before_export(self):
+        theme = bot.DEFAULT_THEME.copy()
+        colors = bot.create_desktop_colors(theme)
+        self.assertEqual(colors["windowSubTextFg"], theme["muted"])
+        self.assertNotEqual(colors["windowSubTextFg"], theme["text"])
+
     def test_preview_upload_retries_temporary_telegram_errors(self):
         class FakeMessage:
             from_user = SimpleNamespace(id=123)

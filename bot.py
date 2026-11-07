@@ -673,6 +673,7 @@ def render_preview(theme: dict, wallpaper_path: str | None = None, image_palette
 
 
 def create_desktop_colors(theme: dict) -> dict:
+    ensure_text_colors(theme)
     bg, accent, fg = theme["background"], theme["accent"], theme["text"]
     message_fg = theme.get("message_text", fg)
     incoming = alpha_hex(theme["incoming"], theme.get("incoming_opacity", 100))
