@@ -16,6 +16,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("--exclude='/tests/'", workflow)
 
+    def test_release_zip_excludes_local_dependency_overlays(self):
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("--exclude='.update-packages/'", workflow)
+        self.assertIn("--exclude='.update-packages.rollback/'", workflow)
+        self.assertIn("--exclude='.update-packages-stage-*/'", workflow)
+
     def test_release_zip_contains_bundled_default_cover(self):
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn(
