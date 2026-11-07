@@ -277,6 +277,7 @@ def recover_dependency_overlay(root: Path, log=None) -> None:
 
 def enable_dependency_overlay(root: Path) -> bool:
     """Put the isolated dependency set before the base venv packages for bot imports."""
+    recover_dependency_overlay(root)
     overlay = (root / ".update-packages").resolve()
     if not overlay.is_dir():
         return False
