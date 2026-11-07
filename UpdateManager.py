@@ -105,6 +105,27 @@ def _asset(assets: list[dict], name: str) -> dict | None:
     return next((item for item in assets if item.get("name") == name), None)
 
 
+def _save_update_state(state_path: Path, checked_at: int, log) -> bool:
+    """Persist the check timestamp atomically without misreporting an applied update."""
+    temporary_path = state_path.with_name(state_path.name + ".tmp")
+    payload = json.dumps({"last_successful_check": int(checked_at)}, ensure_ascii=False)
+    try:
+        temporary_path.write_text(payload, encoding="utf-8")
+        os.replace(temporary_path, state_path)
+        return True
+    except OSError as exc:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        _log(
+            log,
+            "Не удалось сохранить время последней проверки; обновление не будет "
+            f"отменено, следующая проверка может повториться: {exc}",
+        )
+        return False
+
+
 def _checksum_value(payload: bytes) -> str:
     text = payload.decode("utf-8", errors="replace").strip()
     match = re.search(r"\b([0-9a-fA-F]{64})\b", text)
@@ -273,7 +294,7 @@ def _apply_update_if_available_locked(root: Path, log) -> bool:
 
     if release_version <= current_version:
         _log(log, f"Установлена актуальная версия {current_text}.")
-        state_path.write_text(json.dumps({"last_successful_check": now}, ensure_ascii=False), encoding="utf-8")
+        _save_update_state(state_path, now, log)
         return False
 
     version_label = ".".join(str(part) for part in release_version)
@@ -320,7 +341,7 @@ def _apply_update_if_available_locked(root: Path, log) -> bool:
                         pass
                 raise
 
-        state_path.write_text(json.dumps({"last_successful_check": now}, ensure_ascii=False), encoding="utf-8")
+        _save_update_state(state_path, now, log)
         _log(log, f"Обновление установлено: {current_text} → {version_label}.")
         return True
     except Exception as exc:
