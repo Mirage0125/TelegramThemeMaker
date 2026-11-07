@@ -530,8 +530,10 @@ class ThemeExportTests(unittest.TestCase):
 
     def test_wallpaper_cleanup_does_not_touch_outside_paths_or_non_user_folders(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            outside = root / "outside"
+            base = Path(directory)
+            root = base / "user_data"
+            root.mkdir()
+            outside = base / "outside"
             outside.mkdir()
             outside_file = outside / "wallpaper_dddddddddddd.jpg"
             outside_file.write_bytes(b"keep")
@@ -553,6 +555,60 @@ class ThemeExportTests(unittest.TestCase):
             self.assertEqual(removed, 0)
             self.assertTrue(outside_file.exists())
             self.assertTrue(unrelated.exists())
+
+    def test_async_cleanup_reads_wallpapers_from_all_saved_sessions(self):
+        async def exercise(user_data):
+            user_one = user_data / "606"
+            user_two = user_data / "707"
+            user_one.mkdir(parents=True)
+            user_two.mkdir(parents=True)
+            active_one = user_one / "wallpaper_aaaaaaaaaaaa.jpg"
+            active_two = user_two / "wallpaper_bbbbbbbbbbbb.jpg"
+            orphan = user_one / "wallpaper_cccccccccccc.jpg"
+            for path in (active_one, active_two, orphan):
+                path.write_bytes(b"image")
+                os.utime(path, (time.time() - 7200, time.time() - 7200))
+
+            sessions = [
+                {"wallpaper_path": str(active_one)},
+                {"wallpaper_path": str(active_two)},
+                {"theme": {"name": "no wallpaper"}},
+            ]
+            with (
+                patch.object(bot, "USER_DATA", user_data),
+                patch.object(bot.dp.storage, "get_all_data", new=AsyncMock(return_value=sessions)),
+            ):
+                removed = await bot.cleanup_unused_wallpapers()
+
+            self.assertEqual(removed, 1)
+            self.assertTrue(active_one.exists())
+            self.assertTrue(active_two.exists())
+            self.assertFalse(orphan.exists())
+
+        with tempfile.TemporaryDirectory() as directory:
+            asyncio.run(exercise(Path(directory)))
+
+    def test_save_wallpaper_removes_partial_file_when_image_save_fails(self):
+        image_stream = io.BytesIO()
+        Image.new("RGB", (8, 8), (25, 80, 140)).save(image_stream, format="JPEG")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original_data = bot.USER_DATA
+
+            def write_partial_then_fail(image, path, *args, **kwargs):
+                Path(path).write_bytes(b"partial")
+                raise OSError("simulated disk write failure")
+
+            try:
+                bot.USER_DATA = root
+                with patch.object(Image.Image, "save", new=write_partial_then_fail):
+                    with self.assertRaisesRegex(OSError, "simulated disk write failure"):
+                        bot.save_user_wallpaper(606, image_stream.getvalue())
+            finally:
+                bot.USER_DATA = original_data
+
+            self.assertEqual(list((root / "606").glob("wallpaper_*.jpg")), [])
 
     def test_android_message_timestamps_are_exported_as_muted_text(self):
         theme = self.theme.copy()
