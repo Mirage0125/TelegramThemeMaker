@@ -407,6 +407,56 @@ class ThemeExportTests(unittest.TestCase):
             bot.alpha_hex("#445566", 60),
         )
 
+    def test_start_uses_saved_language_after_first_selection(self):
+        async def exercise(has_saved_language):
+            state = AsyncMock()
+            message = SimpleNamespace(from_user=SimpleNamespace(id=8080))
+            with (
+                patch.object(
+                    bot.LANGUAGE_PREFERENCES,
+                    "has_language",
+                    return_value=has_saved_language,
+                ),
+                patch.object(bot, "user_language", return_value="en"),
+                patch.object(bot, "send_welcome", new_callable=AsyncMock) as welcome,
+                patch.object(bot, "send_language_prompt", new_callable=AsyncMock) as prompt,
+            ):
+                await bot.start(message, state)
+                state.clear.assert_awaited_once()
+                state.update_data.assert_awaited_once()
+                if has_saved_language:
+                    welcome.assert_awaited_once_with(message, "en")
+                    prompt.assert_not_awaited()
+                else:
+                    prompt.assert_awaited_once_with(message)
+                    welcome.assert_not_awaited()
+
+        asyncio.run(exercise(False))
+        asyncio.run(exercise(True))
+
+    def test_photo_upload_errors_are_localized_and_keep_size_detail(self):
+        too_large = bot.ImageTooLargeError("Изображение больше 12 МБ.")
+        self.assertEqual(
+            bot.photo_error_text("en", too_large, "upload"),
+            bot.tr("en", "image_too_large"),
+        )
+        self.assertEqual(
+            bot.photo_error_text("en", too_large, "url"),
+            bot.tr("en", "image_too_large"),
+        )
+        self.assertEqual(
+            bot.photo_error_text("en", ValueError("Нужна публичная ссылка"), "upload"),
+            bot.tr("en", "image_error"),
+        )
+        self.assertEqual(
+            bot.photo_error_text("en", ValueError("HTTP 403"), "url"),
+            bot.tr("en", "image_url_error"),
+        )
+
+        russian_error = bot.photo_error_text("ru", ValueError("Ошибка: <bad>"), "url")
+        self.assertIn("Ошибка:", russian_error)
+        self.assertIn("&lt;bad&gt;", russian_error)
+
     def test_macos_palette_name_is_not_wrapped_in_json_quotes(self):
         theme = self.theme.copy()
         theme["name"] = "Sakura Evening"
