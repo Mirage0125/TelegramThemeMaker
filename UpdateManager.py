@@ -336,6 +336,11 @@ def recover_update_transaction(root: Path, log=None) -> bool:
         target = root.joinpath(*parts)
         backup_path = backup_root.joinpath(*parts)
 
+        temporary_target = target.with_name(target.name + ".update-tmp")
+        restore_temporary = target.with_name(target.name + ".update-restore-tmp")
+        temporary_target.unlink(missing_ok=True)
+        restore_temporary.unlink(missing_ok=True)
+
         if entry.get("existed") is True:
             if not backup_path.is_file():
                 raise UpdateError(
