@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 import html
 import io
 import ipaddress
@@ -127,6 +128,10 @@ dp = Dispatcher(
     events_isolation=SimpleEventIsolation(),
 )
 
+# Long photo jobs are tracked separately so their event handler can release the FSM lock.
+PHOTO_PROCESSING_TASKS: dict[object, asyncio.Task] = {}
+PHOTO_PREPARATION_WORKERS: set[asyncio.Task] = set()
+
 DEFAULT_THEME = {
     "name": "Моя тема",
     "background": "#222B36",
@@ -197,6 +202,7 @@ COLOR_BUTTONS = [
 class ThemeStates(StatesGroup):
     waiting_color = State()
     waiting_image = State()
+    processing_image = State()
     waiting_name = State()
 
 
@@ -1769,7 +1775,7 @@ async def update_photo_progress(progress_message: Message, language: str, percen
 
 
 async def download_with_progress(progress_message: Message, language: str, downloader):
-    """Run an async downloader while reflecting byte-based progress in Telegram."""
+    """Run an async downloader and always stop it when the parent job is cancelled."""
     queue: asyncio.Queue[int] = asyncio.Queue()
 
     def report(percent: int):
@@ -1778,34 +1784,40 @@ async def download_with_progress(progress_message: Message, language: str, downl
     await update_photo_progress(progress_message, language, 3, "photo_stage_downloading")
     task = asyncio.create_task(downloader(report))
     displayed_percent = 3
-    while not task.done() or not queue.empty():
-        try:
-            downloaded_percent = await asyncio.wait_for(queue.get(), timeout=0.4)
-        except asyncio.TimeoutError:
-            if task.done():
-                await asyncio.sleep(0)
-                if queue.empty():
-                    break
-            continue
-        # Reserve the first 30% for actual download progress.
-        current_percent = 5 + downloaded_percent * 22 // 100
-        if current_percent > displayed_percent:
-            displayed_percent = current_percent
-            await update_photo_progress(
-                progress_message, language, displayed_percent, "photo_stage_downloading"
-            )
+    try:
+        while not task.done() or not queue.empty():
+            try:
+                downloaded_percent = await asyncio.wait_for(queue.get(), timeout=0.4)
+            except asyncio.TimeoutError:
+                if task.done():
+                    await asyncio.sleep(0)
+                    if queue.empty():
+                        break
+                continue
+            # Reserve the first 30% for actual download progress.
+            current_percent = 5 + downloaded_percent * 22 // 100
+            if current_percent > displayed_percent:
+                displayed_percent = current_percent
+                await update_photo_progress(
+                    progress_message, language, displayed_percent, "photo_stage_downloading"
+                )
 
-    result = await task
-    while not queue.empty():
-        downloaded_percent = queue.get_nowait()
-        current_percent = 5 + downloaded_percent * 22 // 100
-        if current_percent > displayed_percent:
-            displayed_percent = current_percent
-            await update_photo_progress(
-                progress_message, language, displayed_percent, "photo_stage_downloading"
-            )
-    await update_photo_progress(progress_message, language, 30, "photo_stage_analyzing")
-    return result
+        result = await task
+        while not queue.empty():
+            downloaded_percent = queue.get_nowait()
+            current_percent = 5 + downloaded_percent * 22 // 100
+            if current_percent > displayed_percent:
+                displayed_percent = current_percent
+                await update_photo_progress(
+                    progress_message, language, current_percent, "photo_stage_downloading"
+                )
+        await update_photo_progress(progress_message, language, 30, "photo_stage_analyzing")
+        return result
+    except asyncio.CancelledError:
+        task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+        raise
 
 
 async def prepare_photo_assets_with_progress(
@@ -1814,14 +1826,14 @@ async def prepare_photo_assets_with_progress(
     progress_message: Message,
     language: str,
 ) -> tuple[list[str], Path]:
-    """Run Pillow work off the event loop and relay actual processing stages."""
+    """Run Pillow work off-loop and remove its output if cancellation wins the race."""
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
 
     def report(percent: int, stage_key: str):
         loop.call_soon_threadsafe(queue.put_nowait, (percent, stage_key))
 
-    task = asyncio.create_task(
+    worker_task = asyncio.create_task(
         asyncio.to_thread(
             prepare_photo_assets,
             user_id,
@@ -1829,23 +1841,58 @@ async def prepare_photo_assets_with_progress(
             progress_callback=report,
         )
     )
-    while not task.done() or not queue.empty():
-        try:
-            percent, stage_key = await asyncio.wait_for(queue.get(), timeout=0.4)
-        except asyncio.TimeoutError:
-            if task.done():
-                # Let thread-safe callbacks scheduled just before thread completion run.
-                await asyncio.sleep(0)
-                if queue.empty():
-                    break
-            continue
-        await update_photo_progress(progress_message, language, percent, stage_key)
+    PHOTO_PREPARATION_WORKERS.add(worker_task)
+    worker_cancelled = False
+    worker_result_cleaned = False
 
-    result = await task
-    while not queue.empty():
-        percent, stage_key = queue.get_nowait()
-        await update_photo_progress(progress_message, language, percent, stage_key)
-    return result
+    def cleanup_cancelled_result(done_task: asyncio.Task):
+        nonlocal worker_result_cleaned
+        if not worker_cancelled or worker_result_cleaned or done_task.cancelled():
+            return
+        try:
+            result = done_task.result()
+            wallpaper = result[1]
+        except (Exception, asyncio.CancelledError, IndexError, TypeError):
+            return
+        if isinstance(wallpaper, Path):
+            try:
+                wallpaper.unlink(missing_ok=True)
+            except OSError as exc:
+                print(f"Cancelled photo cleanup could not remove its temporary file ({type(exc).__name__}).")
+        worker_result_cleaned = True
+
+    def worker_finished(done_task: asyncio.Task):
+        PHOTO_PREPARATION_WORKERS.discard(done_task)
+        cleanup_cancelled_result(done_task)
+        if not done_task.cancelled():
+            # Retrieve a possible exception even when the parent was cancelled.
+            done_task.exception()
+
+    worker_task.add_done_callback(worker_finished)
+    try:
+        while not worker_task.done() or not queue.empty():
+            try:
+                percent, stage_key = await asyncio.wait_for(queue.get(), timeout=0.4)
+            except asyncio.TimeoutError:
+                if worker_task.done():
+                    # Let callbacks scheduled immediately before thread completion run.
+                    await asyncio.sleep(0)
+                    if queue.empty():
+                        break
+                continue
+            await update_photo_progress(progress_message, language, percent, stage_key)
+
+        result = await asyncio.shield(worker_task)
+        while not queue.empty():
+            percent, stage_key = queue.get_nowait()
+            await update_photo_progress(progress_message, language, percent, stage_key)
+        return result
+    except asyncio.CancelledError:
+        worker_cancelled = True
+        cleanup_cancelled_result(worker_task)
+        # Pillow runs in a worker thread and cannot be force-stopped. Its result
+        # callback removes any wallpaper it finishes writing after this cancellation.
+        raise
 
 
 async def safe_download_image(url: str, progress_callback=None) -> bytes:
@@ -2057,6 +2104,7 @@ async def set_user_commands(bot: Bot):
 
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
+    await cancel_photo_processing(state)
     await state.clear()
     language = user_language(message.from_user.id)
     await state.update_data(theme=default_theme(language), wallpaper_path=None)
@@ -2065,6 +2113,12 @@ async def start(message: Message, state: FSMContext):
         await send_welcome(message, language)
     else:
         await send_language_prompt(message)
+
+
+@dp.callback_query(ThemeStates.processing_image)
+async def photo_processing_callback_busy(callback: CallbackQuery):
+    language = user_language(callback.from_user.id)
+    await callback.answer(tr(language, "photo_processing_cancel_hint"), show_alert=True)
 
 
 @dp.callback_query(F.data == "language")
@@ -2103,6 +2157,7 @@ async def select_language(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(Command("create"))
 async def create_command(message: Message, state: FSMContext):
+    await cancel_photo_processing(state)
     await state.clear()
     language = user_language(message.from_user.id)
     theme = default_theme(language)
@@ -2113,6 +2168,7 @@ async def create_command(message: Message, state: FSMContext):
 
 @dp.message(Command("fromphoto"))
 async def image_command(message: Message, state: FSMContext):
+    await cancel_photo_processing(state)
     await state.clear()
     await state.set_state(ThemeStates.waiting_image)
     await cleanup_unused_wallpapers()
@@ -2122,12 +2178,14 @@ async def image_command(message: Message, state: FSMContext):
 
 @dp.message(Command("catalog"))
 async def catalog_command(message: Message, state: FSMContext):
+    await cancel_photo_processing(state)
     await state.set_state(None)
     await show_catalog(message)
 
 
 @dp.message(Command("help"))
 async def help_command(message: Message, state: FSMContext):
+    await cancel_photo_processing(state)
     await state.set_state(None)
     await send_help(message)
 
@@ -2138,12 +2196,123 @@ async def version_command(message: Message):
     await message.answer(tr(language, "version_text", version=html.escape(APP_VERSION)), parse_mode=ParseMode.HTML)
 
 
+async def cancel_photo_processing(state: FSMContext) -> bool:
+    """Cancel the user's background photo task without waiting for an FSM lock it owns."""
+    key = state.key
+    task = PHOTO_PROCESSING_TASKS.get(key)
+    if task is None:
+        return False
+    if not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            print(f"Photo task stopped with an error during cancellation ({type(exc).__name__}).")
+    if PHOTO_PROCESSING_TASKS.get(key) is task:
+        PHOTO_PROCESSING_TASKS.pop(key, None)
+    return True
+
+
+async def run_photo_processing(
+    message: Message,
+    state: FSMContext,
+    progress_message: Message,
+    language: str,
+    downloader,
+    source: str,
+) -> None:
+    """Background owner of image download, processing, and preview generation."""
+    current_task = asyncio.current_task()
+    try:
+        raw = await download_with_progress(progress_message, language, downloader)
+        if await state.get_state() != ThemeStates.processing_image.state:
+            return
+        await apply_image_to_theme(
+            message,
+            state,
+            raw,
+            progress_message,
+            expected_state=ThemeStates.processing_image.state,
+        )
+    except asyncio.CancelledError:
+        try:
+            await asyncio.wait_for(
+                progress_message.edit_text(tr(language, "photo_cancelled")),
+                timeout=2,
+            )
+        except Exception:
+            pass
+        raise
+    except Exception as exc:
+        print(f"Photo {source} processing failed ({type(exc).__name__}).")
+        try:
+            await progress_message.edit_text(
+                photo_error_text(language, exc, source),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as edit_exc:
+            print(f"Unable to display the photo-processing error ({type(edit_exc).__name__}).")
+        try:
+            if await state.get_state() == ThemeStates.processing_image.state:
+                await state.set_state(ThemeStates.waiting_image)
+        except Exception as state_exc:
+            print(f"Unable to restore photo input state ({type(state_exc).__name__}).")
+    finally:
+        if PHOTO_PROCESSING_TASKS.get(state.key) is current_task:
+            PHOTO_PROCESSING_TASKS.pop(state.key, None)
+
+
+async def start_photo_processing(
+    message: Message,
+    state: FSMContext,
+    progress_message: Message,
+    language: str,
+    downloader,
+    source: str,
+) -> bool:
+    """Start photo work as a separate task and release the update's FSM lock."""
+    key = state.key
+    active_task = PHOTO_PROCESSING_TASKS.get(key)
+    if active_task is not None and not active_task.done():
+        await progress_message.edit_text(tr(language, "photo_already_processing"))
+        return False
+
+    await state.set_state(ThemeStates.processing_image)
+    task = asyncio.create_task(
+        run_photo_processing(
+            message,
+            state,
+            progress_message,
+            language,
+            downloader,
+            source,
+        )
+    )
+    PHOTO_PROCESSING_TASKS[key] = task
+
+    def forget_finished_task(done_task: asyncio.Task):
+        if PHOTO_PROCESSING_TASKS.get(key) is done_task:
+            PHOTO_PROCESSING_TASKS.pop(key, None)
+
+    task.add_done_callback(forget_finished_task)
+    return True
+
+
 @dp.message(Command("cancel"))
 async def cancel_command(message: Message, state: FSMContext):
+    await cancel_photo_processing(state)
     await state.clear()
     await cleanup_unused_wallpapers()
     language = user_language(message.from_user.id)
     await message.answer(tr(language, "cancelled"), reply_markup=main_menu(language))
+
+
+@dp.message(ThemeStates.processing_image)
+async def photo_processing_busy(message: Message):
+    language = user_language(message.from_user.id)
+    await message.answer(tr(language, "photo_processing_cancel_hint"))
 
 
 async def send_help(message: Message, language: str | None = None):
@@ -2204,23 +2373,14 @@ async def image_upload(message: Message, state: FSMContext, bot: Bot):
         tr(language, "photo_progress", percent=3, stage=tr(language, "photo_stage_downloading")),
         parse_mode=ParseMode.HTML,
     )
-    try:
-        raw = await download_with_progress(
-            progress_message,
-            language,
-            lambda report: download_telegram_image(message, bot, report),
-        )
-        await apply_image_to_theme(message, state, raw, progress_message)
-    except Exception as exc:
-        # Keep transport and processing errors in the language selected by the user.
-        print(f"Photo upload or processing failed ({type(exc).__name__}).")
-        try:
-            await progress_message.edit_text(
-                photo_error_text(language, exc, "upload"),
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception as edit_exc:
-            print(f"Unable to display the photo-processing error ({type(edit_exc).__name__}).")
+    await start_photo_processing(
+        message,
+        state,
+        progress_message,
+        language,
+        lambda report: download_telegram_image(message, bot, report),
+        "upload",
+    )
 
 
 @dp.message(ThemeStates.waiting_image, F.text)
@@ -2235,22 +2395,14 @@ async def image_url(message: Message, state: FSMContext):
         tr(language, "photo_progress", percent=3, stage=tr(language, "photo_stage_downloading")),
         parse_mode=ParseMode.HTML,
     )
-    try:
-        raw = await download_with_progress(
-            progress_message,
-            language,
-            lambda report: safe_download_image(url, report),
-        )
-        await apply_image_to_theme(message, state, raw, progress_message)
-    except Exception as exc:
-        print(f"Photo URL download failed ({type(exc).__name__}).")
-        try:
-            await progress_message.edit_text(
-                photo_error_text(language, exc, "url"),
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception as edit_exc:
-            print(f"Unable to display the photo download error ({type(edit_exc).__name__}).")
+    await start_photo_processing(
+        message,
+        state,
+        progress_message,
+        language,
+        lambda report: safe_download_image(url, report),
+        "url",
+    )
 
 
 async def apply_image_to_theme(
@@ -2258,59 +2410,75 @@ async def apply_image_to_theme(
     state: FSMContext,
     raw: bytes,
     progress_message: Message | None = None,
+    expected_state: str | None = None,
 ):
     language = user_language(message.from_user.id)
-    if len(raw) > MAX_IMAGE_BYTES:
-        error_text = tr(language, "image_too_large")
+    wallpaper: Path | None = None
+    try:
+        if len(raw) > MAX_IMAGE_BYTES:
+            error_text = tr(language, "image_too_large")
+            if progress_message:
+                await progress_message.edit_text(error_text)
+            else:
+                await message.answer(error_text)
+            return
+
         if progress_message:
-            await progress_message.edit_text(error_text)
+            await update_photo_progress(progress_message, language, 32, "photo_stage_analyzing")
+            colors, wallpaper = await prepare_photo_assets_with_progress(
+                message.from_user.id,
+                raw,
+                progress_message,
+                language,
+            )
         else:
-            await message.answer(error_text)
-        return
+            colors, wallpaper = await asyncio.to_thread(
+                prepare_photo_assets,
+                message.from_user.id,
+                raw,
+            )
 
-    if progress_message:
-        await update_photo_progress(progress_message, language, 32, "photo_stage_analyzing")
-        colors, wallpaper = await prepare_photo_assets_with_progress(
-            message.from_user.id,
-            raw,
-            progress_message,
-            language,
+        if not colors:
+            error_text = tr(language, "image_no_colors")
+            if progress_message:
+                await progress_message.edit_text(error_text)
+            else:
+                await message.answer(error_text)
+            return
+
+        # A user may have switched modes while a worker thread was finishing.
+        # Never let an obsolete photo job overwrite the newer FSM session.
+        if expected_state and await state.get_state() != expected_state:
+            return
+
+        theme = create_photo_theme(colors)
+        theme["name"] = tr(language, "default_theme_name")
+        await state.clear()
+        await state.update_data(
+            theme=theme,
+            photo_theme_original=theme.copy(),
+            wallpaper_path=str(wallpaper),
+            image_palette=colors,
         )
-    else:
-        colors, wallpaper = await asyncio.to_thread(
-            prepare_photo_assets,
-            message.from_user.id,
-            raw,
+        # The persisted FSM session now owns the wallpaper reference.
+        wallpaper = None
+        data = await state.get_data()
+        await cleanup_unused_wallpapers()
+        await show_theme(
+            message,
+            theme,
+            data.get("wallpaper_path"),
+            prefix=tr(language, "prefix_photo"),
+            image_palette=colors,
+            language=language,
+            progress_message=progress_message,
         )
-
-    if not colors:
-        wallpaper.unlink(missing_ok=True)
-        error_text = tr(language, "image_no_colors")
-        if progress_message:
-            await progress_message.edit_text(error_text)
-        else:
-            await message.answer(error_text)
-        return
-
-    theme = create_photo_theme(colors)
-    theme["name"] = tr(language, "default_theme_name")
-    await state.clear()
-    await state.update_data(
-        theme=theme,
-        photo_theme_original=theme.copy(),
-        wallpaper_path=str(wallpaper),
-        image_palette=colors,
-    )
-    await cleanup_unused_wallpapers()
-    await show_theme(
-        message,
-        theme,
-        str(wallpaper),
-        prefix=tr(language, "prefix_photo"),
-        image_palette=colors,
-        language=language,
-        progress_message=progress_message,
-    )
+    finally:
+        if wallpaper is not None:
+            try:
+                wallpaper.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 @dp.callback_query(F.data.startswith("field:"))
