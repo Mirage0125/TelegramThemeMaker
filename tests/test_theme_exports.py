@@ -407,6 +407,42 @@ class ThemeExportTests(unittest.TestCase):
             bot.alpha_hex("#445566", 60),
         )
 
+    def test_macos_palette_name_is_not_wrapped_in_json_quotes(self):
+        theme = self.theme.copy()
+        theme["name"] = "Sakura Evening"
+        exported = bot.create_macos_palette(theme).decode("utf-8")
+
+        self.assertIn("name = Sakura Evening", exported.splitlines())
+        self.assertNotIn('name = "Sakura Evening"', exported.splitlines())
+
+    def test_image_pixel_limit_is_enforced_before_processing(self):
+        class FakeImage:
+            def __init__(self, size):
+                self.size = size
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback_value):
+                return False
+
+        with patch.object(bot, "MAX_IMAGE_PIXELS", 10):
+            bot.validate_image_dimensions(FakeImage((5, 2)))
+            with self.assertRaisesRegex(ValueError, "25 мегапикселей"):
+                bot.validate_image_dimensions(FakeImage((11, 1)))
+
+        with tempfile.TemporaryDirectory() as directory:
+            oversized_image = FakeImage((11, 1))
+            with (
+                patch.object(bot, "MAX_IMAGE_PIXELS", 10),
+                patch.object(bot.Image, "open", return_value=oversized_image),
+                patch.object(bot, "USER_DATA", Path(directory)),
+            ):
+                with self.assertRaisesRegex(ValueError, "25 мегапикселей"):
+                    bot.extract_palette(b"fake-image-data")
+                with self.assertRaisesRegex(ValueError, "25 мегапикселей"):
+                    bot.save_user_wallpaper(606, b"fake-image-data")
+
     def test_android_message_timestamps_are_exported_as_muted_text(self):
         theme = self.theme.copy()
         theme["muted"] = "#778899"
