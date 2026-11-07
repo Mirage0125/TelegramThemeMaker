@@ -67,6 +67,9 @@ jobs:
             --exclude='__pycache__/' \
             --exclude='.bot.lock' \
             --exclude='.update-state.json' \
+            --exclude='.update-packages/' \
+            --exclude='.update-packages.rollback/' \
+            --exclude='.update-packages-stage-*/' \
             --exclude='*.pyc' \
             --exclude='*.log'
           if [[ ! -s assets/welcome.png ]]; then
