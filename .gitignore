@@ -10,6 +10,9 @@ user_data/
 logs/
 .bot.lock
 .update-state.json
+.update-packages/
+.update-packages.rollback/
+.update-packages-stage-*/
 *.log
 .DS_Store
 Thumbs.db
