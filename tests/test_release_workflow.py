@@ -16,6 +16,18 @@ class ReleaseWorkflowTests(unittest.TestCase):
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("--exclude='/tests/'", workflow)
 
+    def test_start_launcher_only_installs_base_dependencies_when_imports_are_missing(self):
+        launcher = (ROOT / "Start.bat").read_text(encoding="utf-8")
+        self.assertIn('import aiogram, PIL, dotenv, aiohttp', launcher)
+        self.assertIn(
+            "Base environment is ready; dependency updates are handled by the updater.",
+            launcher,
+        )
+        self.assertLess(
+            launcher.index('import aiogram, PIL, dotenv, aiohttp'),
+            launcher.index(' -m pip --disable-pip-version-check install -r requirements.txt'),
+        )
+
     def test_release_zip_excludes_local_dependency_overlays(self):
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("--exclude='.update-packages/'", workflow)
