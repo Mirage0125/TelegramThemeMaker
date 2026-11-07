@@ -347,6 +347,45 @@ class ThemeExportTests(unittest.TestCase):
         self.assertNotIn("author:", exported)
         self.assertIn("bubbleIn_background", exported)
 
+    def test_telegram_photo_download_buffer_enforces_limit_without_file_size(self):
+        buffer = bot.ProgressBytesIO(None, max_bytes=5)
+        self.assertEqual(buffer.write(b"12345"), 5)
+        with self.assertRaisesRegex(ValueError, "12 МБ"):
+            buffer.write(b"6")
+        self.assertEqual(buffer.getvalue(), b"12345")
+
+    def test_macos_palette_encodes_alpha_as_fractional_opacity(self):
+        theme = self.theme.copy()
+        theme["text"] = "#123456"
+        theme["accent"] = "#ABCDEF"
+        exported = bot.create_macos_palette(theme).decode("utf-8")
+        values = dict(
+            line.split(" = ", 1)
+            for line in exported.splitlines()
+            if " = " in line
+        )
+
+        self.assertEqual(values["blackTransparent"], "#000000: 0.42")
+        self.assertEqual(values["grayTransparent"], "#123456: 0.18")
+        self.assertEqual(values["waveformBackground"], "#ABCDEF: 0.35")
+        self.assertEqual(values["waveformBackgroundBubble_incoming"], "#ABCDEF: 0.35")
+        self.assertEqual(values["waveformBackgroundBubble_outgoing"], "#ABCDEF: 0.35")
+
+    def test_android_message_timestamps_are_exported_as_muted_text(self):
+        theme = self.theme.copy()
+        theme["muted"] = "#778899"
+        theme["text"] = "#112233"
+        theme["message_text"] = "#AABBCC"
+
+        keys = bot.load_android_theme_keys()
+        for key in ("chat_inTimeText", "chat_outTimeText"):
+            with self.subTest(key=key):
+                self.assertIn(key, keys)
+                self.assertEqual(
+                    bot.android_color_for_key(key, theme),
+                    bot.signed_argb(theme["muted"]),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
