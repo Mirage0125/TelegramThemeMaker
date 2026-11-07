@@ -6,6 +6,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 import BackgroundRunner
+import UpdateManager
 import tempfile
 import unittest
 from pathlib import Path
@@ -75,6 +76,35 @@ class InstanceLockTests(unittest.TestCase):
                 self.assertFalse(enable_dependency_overlay(root))
             finally:
                 sys.path[:] = original_path
+
+
+    def test_recovery_failure_stops_bot_startup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_dir = root / "logs"
+            log_file = log_dir / "bot.log"
+            previous_stdout, previous_stderr = sys.stdout, sys.stderr
+
+            try:
+                with (
+                    patch.object(BackgroundRunner, "ROOT", root),
+                    patch.object(BackgroundRunner, "LOG_DIR", log_dir),
+                    patch.object(BackgroundRunner, "LOG_FILE", log_file),
+                    patch(
+                        "UpdateManager.recover_update_transaction",
+                        side_effect=UpdateManager.UpdateError("backup missing"),
+                    ),
+                    patch.object(BackgroundRunner.runpy, "run_path") as run_bot,
+                ):
+                    exit_code = BackgroundRunner.main()
+            finally:
+                sys.stdout, sys.stderr = previous_stdout, previous_stderr
+
+            self.assertEqual(exit_code, 1)
+            run_bot.assert_not_called()
+            log_text = log_file.read_text(encoding="utf-8")
+            self.assertIn("запуск бота остановлен", log_text)
+            self.assertIn("backup missing", log_text)
 
     def test_second_process_cannot_acquire_lock_until_first_exits(self):
         with tempfile.TemporaryDirectory() as directory:
