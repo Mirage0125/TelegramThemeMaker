@@ -66,7 +66,7 @@ class InstanceLockTests(unittest.TestCase):
                 self.assertEqual(Path(sys.path[0]).resolve(), overlay.resolve())
                 occurrences = [
                     entry for entry in sys.path
-                    if entry and os.path.samefile(entry, overlay)
+                    if entry and Path(entry).resolve() == overlay.resolve()
                 ]
                 self.assertEqual(len(occurrences), 1)
 
