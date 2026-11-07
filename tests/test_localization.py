@@ -23,6 +23,18 @@ class LanguagePreferencesTests(unittest.TestCase):
             reopened.set_language(202, "ru")
             self.assertEqual(preferences.get_language(202), "ru")
 
+    def test_language_preference_presence_distinguishes_first_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            preferences = LanguagePreferences(Path(directory) / "languages.sqlite3")
+            self.assertFalse(preferences.has_language(404))
+
+            preferences.set_language(404, "en")
+            self.assertTrue(preferences.has_language(404))
+
+            reopened = LanguagePreferences(Path(directory) / "languages.sqlite3")
+            self.assertTrue(reopened.has_language(404))
+            self.assertFalse(reopened.has_language(405))
+
     def test_invalid_language_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             preferences = LanguagePreferences(Path(directory) / "languages.sqlite3")
