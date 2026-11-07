@@ -75,6 +75,10 @@ class ProgressBytesIO(io.BytesIO):
                 self.progress_callback(percent)
         return written
 
+class PreviewUploadError(RuntimeError):
+    """The theme was prepared, but Telegram could not deliver its preview."""
+
+
 if not TOKEN or TOKEN == "PASTE_YOUR_BOT_TOKEN_HERE":
     raise SystemExit("Не найден токен. Открой .env, вставь токен от @BotFather и перезапусти Start.bat.")
 
@@ -669,11 +673,12 @@ def render_preview(theme: dict, wallpaper_path: str | None = None, image_palette
 
 
 def create_desktop_colors(theme: dict) -> dict:
+    ensure_text_colors(theme)
     bg, accent, fg = theme["background"], theme["accent"], theme["text"]
     message_fg = theme.get("message_text", fg)
     incoming = alpha_hex(theme["incoming"], theme.get("incoming_opacity", 100))
     outgoing = alpha_hex(theme["outgoing"], theme.get("outgoing_opacity", 100))
-    muted = fg
+    muted = theme.get("muted") or mix(fg, bg, 0.28)
     soft_bg = mix(bg, fg, 0.08)
     active_bg = mix(bg, accent, 0.28)
     soft_accent = mix(accent, bg, 0.22)
@@ -1264,9 +1269,10 @@ def create_android_theme(theme: dict, wallpaper_path: Path | None) -> bytes:
 
 
 def ios_hex(color: str, alpha: int = 100) -> str:
-    """Return a YAML-quoted RGB/ARGB hex string (quotes prevent numeric coercion)."""
-    a = max(0, min(100, alpha)) * 255 // 100
-    value = f"{a:02X}{color.lstrip('#').upper()}" if alpha < 100 else color.lstrip("#").upper()
+    """Return a YAML-quoted RGB/RGBA hex string; translucent alpha is the final byte."""
+    value = color.lstrip("#").upper()
+    if alpha < 100:
+        value += f"{max(0, min(100, int(alpha))) * 255 // 100:02X}"
     return json.dumps(value)
 
 
@@ -1414,8 +1420,8 @@ def create_macos_palette(theme: dict) -> bytes:
         "accent": accent,
         "redUI": "#E35D6A",
         "greenUI": "#42A878",
-        "blackTransparent": "#000000: 42",
-        "grayTransparent": f"{fg}: 18",
+        "blackTransparent": alpha_hex("#000000", 42),
+        "grayTransparent": alpha_hex(fg, 18),
         "grayUI": muted,
         "darkGrayText": muted,
         "accentSelect": selected,
@@ -1437,8 +1443,8 @@ def create_macos_palette(theme: dict) -> bytes:
         "monospacedCodeBubble_outgoing": accent,
         "selectTextBubble_incoming": contrast_color(accent),
         "selectTextBubble_outgoing": contrast_color(accent),
-        "bubbleBackground_incoming": incoming,
-        "bubbleBackground_outgoing": outgoing,
+        "bubbleBackground_incoming": alpha_hex(incoming, theme.get("incoming_opacity", 100)),
+        "bubbleBackground_outgoing": alpha_hex(outgoing, theme.get("outgoing_opacity", 100)),
         "bubbleBorder_incoming": border,
         "bubbleBorder_outgoing": outgoing,
         "bubbleBackgroundHighlight_incoming": selected,
@@ -1471,10 +1477,10 @@ def create_macos_palette(theme: dict) -> bytes:
         "fileActivityBackgroundBubble_outgoing": accent,
         "fileActivityForegroundBubble_incoming": contrast_color(accent),
         "fileActivityForegroundBubble_outgoing": contrast_color(accent),
-        "waveformBackground": f"{accent}: 35",
+        "waveformBackground": alpha_hex(accent, 35),
         "waveformForeground": accent,
-        "waveformBackgroundBubble_incoming": f"{accent}: 35",
-        "waveformBackgroundBubble_outgoing": f"{accent}: 35",
+        "waveformBackgroundBubble_incoming": alpha_hex(accent, 35),
+        "waveformBackgroundBubble_outgoing": alpha_hex(accent, 35),
         "waveformForegroundBubble_incoming": accent,
         "waveformForegroundBubble_outgoing": accent,
         "chatDateActive": soft_bg,
@@ -1532,10 +1538,13 @@ def create_tgx_theme(theme: dict) -> bytes:
     message_fg = theme.get("message_text", fg)
     incoming = alpha_hex(theme["incoming"], theme.get("incoming_opacity", 100))
     outgoing = alpha_hex(theme["outgoing"], theme.get("outgoing_opacity", 100))
+    dark = luminance(bg) < 0.179
+    parent_theme = 2 if dark else 1
     values = [
-        "!", f"name: {json.dumps(theme.get('name', 'Theme Maker'), ensure_ascii=False)}",
-        f"time: {int(time.time())}", 'author: "Theme Maker"', "@", "bubbleCorner: 19",
-        "bubbleOutline: 1", "parentTheme, wallpaperUsageId: 2", "#",
+        "!", "id: 0", f"name: {json.dumps(theme.get('name', 'Theme Maker'), ensure_ascii=False)}",
+        f"time: {int(time.time())}", "tinted: false", "@",
+        "bubbleCorner: 19", "bubbleOutline: 1",
+        f"dark: {1 if dark else 0}", f"parentTheme: {parent_theme}", "wallpaperUsageId: 0", "#",
         f"background, chatSeparator, fileAttach: {bg}",
         f"badge, bubbleOut_progress, chatListAction, chatSendButton, online, seekDone, ticks, ticksRead: {accent}",
         f"bubble_chatBackground, chatBackground: {bg}",
@@ -1544,6 +1553,7 @@ def create_tgx_theme(theme: dict) -> bytes:
         f"bubbleIn_textLink, bubbleOut_file, bubbleOut_textLink, file, fileGreen, fileRed, fileYellow, headerButton, iv_textLink, textLink, togglerActiveBackground: {accent}",
         f"bubbleIn_textLinkPressHighlight, textLinkPressHighlight: {alpha_hex(accent, 40)}",
         f"bubbleOut_chatVerticalLine, messageVerticalLine: {fg}",
+        f"bubbleIn_text, bubbleOut_text: {message_fg}",
         f"bubbleOut_inlineText, bubbleIn_inlineText: {message_fg}",
         f"bubbleOut_ticks, bubbleOut_ticksRead, fillingPositive: {accent}",
         f"bubbleOut_waveformActive, waveformActive: {accent}",
@@ -1594,41 +1604,49 @@ async def update_photo_progress(progress_message: Message, language: str, percen
 
 
 async def download_with_progress(progress_message: Message, language: str, downloader):
-    """Run an async downloader while reflecting byte-based progress in Telegram."""
-    queue: asyncio.Queue[int] = asyncio.Queue()
+    """Run an async downloader while reflecting byte progress and named stages."""
+    queue: asyncio.Queue[tuple[str, int | str]] = asyncio.Queue()
 
-    def report(percent: int):
-        queue.put_nowait(max(0, min(100, int(percent))))
+    def report(value: int | str):
+        if isinstance(value, str):
+            queue.put_nowait(("stage", value))
+        else:
+            queue.put_nowait(("percent", max(0, min(100, int(value)))))
 
     await update_photo_progress(progress_message, language, 3, "photo_stage_downloading")
     task = asyncio.create_task(downloader(report))
     displayed_percent = 3
+
+    async def display_update(kind: str, value: int | str):
+        nonlocal displayed_percent
+        if kind == "stage":
+            await update_photo_progress(
+                progress_message, language, displayed_percent, str(value)
+            )
+            return
+        # Reserve the first 30% for actual download progress.
+        current_percent = 5 + int(value) * 22 // 100
+        if current_percent > displayed_percent:
+            displayed_percent = current_percent
+            await update_photo_progress(
+                progress_message, language, displayed_percent, "photo_stage_downloading"
+            )
+
     while not task.done() or not queue.empty():
         try:
-            downloaded_percent = await asyncio.wait_for(queue.get(), timeout=0.4)
+            kind, value = await asyncio.wait_for(queue.get(), timeout=0.4)
         except asyncio.TimeoutError:
             if task.done():
                 await asyncio.sleep(0)
                 if queue.empty():
                     break
             continue
-        # Reserve the first 30% for actual download progress.
-        current_percent = 5 + downloaded_percent * 22 // 100
-        if current_percent > displayed_percent:
-            displayed_percent = current_percent
-            await update_photo_progress(
-                progress_message, language, displayed_percent, "photo_stage_downloading"
-            )
+        await display_update(kind, value)
 
     result = await task
     while not queue.empty():
-        downloaded_percent = queue.get_nowait()
-        current_percent = 5 + downloaded_percent * 22 // 100
-        if current_percent > displayed_percent:
-            displayed_percent = current_percent
-            await update_photo_progress(
-                progress_message, language, displayed_percent, "photo_stage_downloading"
-            )
+        kind, value = queue.get_nowait()
+        await display_update(kind, value)
     await update_photo_progress(progress_message, language, 30, "photo_stage_analyzing")
     return result
 
@@ -1729,7 +1747,7 @@ async def safe_download_image(url: str, progress_callback=None) -> bytes:
     raise ValueError("Слишком много перенаправлений. Скачай изображение и отправь его файлом.")
 
 
-async def retry_telegram_operation(operation, operation_name: str):
+async def retry_telegram_operation(operation, operation_name: str, progress_callback=None):
     """Retry temporary Telegram 5xx/network failures with a short exponential backoff."""
     for attempt in range(1, TELEGRAM_REQUEST_ATTEMPTS + 1):
         try:
@@ -1747,6 +1765,8 @@ async def retry_telegram_operation(operation, operation_name: str):
                 f"(attempt {attempt}/{TELEGRAM_REQUEST_ATTEMPTS}); "
                 f"retrying in {delay:g}s."
             )
+            if progress_callback:
+                progress_callback("photo_stage_retrying")
             await asyncio.sleep(delay)
 
 
@@ -1763,12 +1783,15 @@ async def download_telegram_image(message: Message, bot: Bot, progress_callback=
     else:
         raise ValueError("Отправь картинку как фото или как файл.")
 
+    if progress_callback:
+        progress_callback("photo_stage_file_info")
     file_obj = await retry_telegram_operation(
         lambda: bot.get_file(
             file_id,
             request_timeout=TELEGRAM_GET_FILE_TIMEOUT,
         ),
         "file metadata lookup",
+        progress_callback,
     )
 
     if file_obj.file_size and file_obj.file_size > MAX_IMAGE_BYTES:
@@ -1784,7 +1807,11 @@ async def download_telegram_image(message: Message, bot: Bot, progress_callback=
         )
         return buffer.getvalue()
 
-    return await retry_telegram_operation(download_once, "photo file download")
+    if progress_callback:
+        progress_callback("photo_stage_downloading")
+    return await retry_telegram_operation(
+        download_once, "photo file download", progress_callback
+    )
 
 
 async def show_theme(
@@ -1821,12 +1848,20 @@ async def show_theme(
         f"{tr(language, 'legend_opacity')}\n\n"
         f"{tr(language, 'theme_auto_text')}"
     )
-    await message.answer_photo(
-        BufferedInputFile(preview, filename="theme-preview.jpg"),
-        caption=caption,
-        reply_markup=theme_keyboard(language, bool(image_palette)),
-        parse_mode=ParseMode.HTML,
-    )
+    async def send_preview():
+        # Recreate the upload object on every attempt in case a prior request consumed it.
+        return await message.answer_photo(
+            BufferedInputFile(preview, filename="theme-preview.jpg"),
+            caption=caption,
+            reply_markup=theme_keyboard(language, bool(image_palette)),
+            parse_mode=ParseMode.HTML,
+        )
+
+    try:
+        await retry_telegram_operation(send_preview, "photo preview upload")
+    except Exception as exc:
+        print(f"Photo preview delivery failed ({type(exc).__name__}).")
+        raise PreviewUploadError(tr(language, "photo_preview_send_error")) from exc
     if progress_message:
         await update_photo_progress(progress_message, language, 100, "photo_stage_done")
 
@@ -2026,6 +2061,12 @@ async def image_upload(message: Message, state: FSMContext, bot: Bot):
             lambda report: download_telegram_image(message, bot, report),
         )
         await apply_image_to_theme(message, state, raw, progress_message)
+    except PreviewUploadError as exc:
+        print(f"Photo preview could not be delivered ({type(exc).__name__}).")
+        try:
+            await progress_message.edit_text(html.escape(str(exc)), parse_mode=ParseMode.HTML)
+        except Exception as edit_exc:
+            print(f"Unable to display the preview delivery error ({type(edit_exc).__name__}).")
     except Exception as exc:
         # Catch Telegram transport errors too, so the user never sees a frozen progress message.
         print(f"Photo upload or processing failed ({type(exc).__name__}).")
@@ -2057,6 +2098,12 @@ async def image_url(message: Message, state: FSMContext):
             lambda report: safe_download_image(url, report),
         )
         await apply_image_to_theme(message, state, raw, progress_message)
+    except PreviewUploadError as exc:
+        print(f"Photo preview could not be delivered ({type(exc).__name__}).")
+        try:
+            await progress_message.edit_text(html.escape(str(exc)), parse_mode=ParseMode.HTML)
+        except Exception as edit_exc:
+            print(f"Unable to display the preview delivery error ({type(edit_exc).__name__}).")
     except Exception as exc:
         print(f"Photo URL download failed ({type(exc).__name__}).")
         try:

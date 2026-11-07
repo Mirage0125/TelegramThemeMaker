@@ -49,6 +49,106 @@ class ThemeExportTests(unittest.TestCase):
         self.assertIn(b"isDark =", outputs["macos"])
         self.assertIn(b"bubbleIn_background", outputs["telegram_x"])
 
+    def test_ios_alpha_is_encoded_in_the_last_byte(self):
+        self.assertEqual(bot.ios_hex("#112233", 50), '"1122337F"')
+        self.assertEqual(bot.ios_hex("#112233", 100), '"112233"')
+
+        self.theme["incoming_opacity"] = 50
+        payload = bot.create_ios_theme(self.theme).decode("utf-8")
+        self.assertIn('"35404D7F"', payload)
+
+    def test_macos_palette_uses_rgba_and_preserves_bubble_opacity(self):
+        self.theme["incoming_opacity"] = 42
+        self.theme["outgoing_opacity"] = 73
+        payload = bot.create_macos_palette(self.theme).decode("utf-8")
+        values = {}
+        for line in payload.splitlines():
+            if " = " not in line:
+                continue
+            key, value = line.split(" = ", 1)
+            values[key] = value
+
+        self.assertEqual(values["bubbleBackground_incoming"], bot.alpha_hex(self.theme["incoming"], 42))
+        self.assertEqual(values["bubbleBackground_outgoing"], bot.alpha_hex(self.theme["outgoing"], 73))
+        self.assertEqual(values["blackTransparent"], bot.alpha_hex("#000000", 42))
+        self.assertEqual(values["waveformBackground"], bot.alpha_hex(self.theme["accent"], 35))
+        for key, value in values.items():
+            if key in {"name", "shortname", "isDark", "tinted", "parent"}:
+                continue
+            self.assertRegex(value, r"^#[0-9A-F]{6}(?:[0-9A-F]{2})?$", msg=key)
+
+    def test_telegram_x_header_and_colors_follow_the_native_parser_schema(self):
+        self.theme["background"] = "#F1F2F3"
+        self.theme["message_text"] = "#123456"
+        self.theme["message_text_auto"] = False
+        payload = bot.create_tgx_theme(self.theme).decode("utf-8")
+        section = None
+        settings = {}
+        properties = {}
+        colors = {}
+        for line in payload.splitlines():
+            if line in {"!", "@", "#"}:
+                section = line
+                continue
+            if not line.strip() or ":" not in line:
+                continue
+            names, value = line.split(":", 1)
+            target = {"!": settings, "@": properties, "#": colors}[section]
+            for name in names.split(","):
+                target[name.strip()] = value.strip()
+
+        self.assertEqual(set(settings), {"id", "name", "time", "tinted"})
+        self.assertEqual(settings["tinted"], "false")
+        self.assertEqual(properties["dark"], "0")
+        self.assertEqual(properties["parentTheme"], "1")
+        self.assertEqual(properties["wallpaperUsageId"], "0")
+        self.assertEqual(colors["bubbleIn_text"], "#123456")
+        self.assertEqual(colors["bubbleOut_text"], "#123456")
+        self.assertNotIn("author", payload)
+
+        self.theme["background"] = "#17202A"
+        dark_payload = bot.create_tgx_theme(self.theme).decode("utf-8")
+        self.assertIn("dark: 1", dark_payload)
+        self.assertIn("parentTheme: 2", dark_payload)
+
+    def test_desktop_uses_the_configured_muted_text_color(self):
+        self.theme["muted"] = "#123456"
+        self.theme["muted_auto"] = False
+        colors = bot.create_desktop_colors(self.theme)
+        self.assertEqual(colors["windowSubTextFg"], "#123456")
+
+    def test_desktop_computes_default_muted_text_before_export(self):
+        theme = bot.DEFAULT_THEME.copy()
+        colors = bot.create_desktop_colors(theme)
+        self.assertEqual(colors["windowSubTextFg"], theme["muted"])
+        self.assertNotEqual(colors["windowSubTextFg"], theme["text"])
+
+    def test_preview_upload_retries_temporary_telegram_errors(self):
+        class FakeMessage:
+            from_user = SimpleNamespace(id=123)
+
+            def __init__(self):
+                self.calls = 0
+
+            async def answer_photo(self, *args, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise bot.TelegramNetworkError(
+                        method=SimpleNamespace(),
+                        message="Request timeout error",
+                    )
+                return SimpleNamespace(message_id=77)
+
+        async def exercise():
+            message = FakeMessage()
+            with patch("bot.user_language", return_value="en"), \
+                 patch("bot.render_preview", return_value=b"preview"), \
+                 patch("bot.asyncio.sleep", new=AsyncMock()):
+                await bot.show_theme(message, self.theme.copy(), language="en")
+            return message.calls
+
+        self.assertEqual(asyncio.run(exercise()), 2)
+
     def test_wallpaper_is_embedded_only_in_supported_formats(self):
         image_stream = io.BytesIO()
         Image.new("RGB", (8, 8), (25, 80, 140)).save(image_stream, format="JPEG")
@@ -266,6 +366,9 @@ class ThemeExportTests(unittest.TestCase):
             progress_message = FakeMessage()
 
             async def fake_download(report):
+                report("photo_stage_file_info")
+                await asyncio.sleep(0)
+                report("photo_stage_retrying")
                 for percent in (20, 40, 60, 80, 100):
                     report(percent)
                     await asyncio.sleep(0)
@@ -279,6 +382,8 @@ class ThemeExportTests(unittest.TestCase):
         self.assertTrue(any("Loading: 9%" in item for item in edits))
         self.assertTrue(any("Loading: 27%" in item for item in edits))
         self.assertTrue(any("Loading: 30%" in item for item in edits))
+        self.assertTrue(any("Requesting file details from Telegram" in item for item in edits))
+        self.assertTrue(any("Retrying the request" in item for item in edits))
 
 
     def test_photo_preparation_progress_is_relayed_from_worker(self):

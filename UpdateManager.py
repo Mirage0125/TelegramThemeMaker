@@ -48,6 +48,10 @@ class UpdateError(RuntimeError):
     """Raised when a release cannot be validated or safely installed."""
 
 
+class UpdateRollbackError(UpdateError):
+    """Raised when rollback is incomplete and backup files must be retained."""
+
+
 def _log(log, message: str) -> None:
     log(f"[Updater] {message}")
 
@@ -183,6 +187,31 @@ def _stage_archive(archive_path: Path, destination: Path, expected_version: str)
     return staged_root
 
 
+def _restore_backup_file(target: Path, backup: Path) -> None:
+    """Restore via a temporary file beside the target, then atomically replace it."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary_target = target.with_name(target.name + ".restore-tmp")
+    try:
+        shutil.copy2(backup, temporary_target)
+        os.replace(temporary_target, target)
+    finally:
+        temporary_target.unlink(missing_ok=True)
+
+
+def _rollback_changed_files(changed: list[tuple[Path, Path | None]]) -> list[str]:
+    """Restore changed files and return any failures without deleting the backups."""
+    failures = []
+    for target, backup in reversed(changed):
+        try:
+            if backup and backup.exists():
+                _restore_backup_file(target, backup)
+            else:
+                target.unlink(missing_ok=True)
+        except OSError as exc:
+            failures.append(f"{target}: {exc}")
+    return failures
+
+
 def _apply_staged_files(root: Path, staged_root: Path, backup_root: Path) -> tuple[list[tuple[Path, Path | None]], bool]:
     changed: list[tuple[Path, Path | None]] = []
     requirements_path = root / "requirements.txt"
@@ -208,15 +237,13 @@ def _apply_staged_files(root: Path, staged_root: Path, backup_root: Path) -> tup
             shutil.copy2(staged_file, temporary_target)
             os.replace(temporary_target, target)
             changed.append((target, backup_path))
-    except Exception:
-        for target, backup_path in reversed(changed):
-            try:
-                if backup_path and backup_path.exists():
-                    os.replace(backup_path, target)
-                else:
-                    target.unlink(missing_ok=True)
-            except OSError:
-                pass
+    except Exception as exc:
+        failures = _rollback_changed_files(changed)
+        if failures:
+            raise UpdateRollbackError(
+                "Не удалось полностью откатить обновление. "
+                "Резервные копии сохранены: " + "; ".join(failures)
+            ) from exc
         raise
     return changed, requirements_changed
 
@@ -290,7 +317,9 @@ def _apply_update_if_available_locked(root: Path, log) -> bool:
         return False
 
     temp_dir = Path(tempfile.mkdtemp(prefix="theme-maker-update-"))
-    changed: list[Path] = []
+    backup_root: Path | None = None
+    preserve_backup = False
+    changed: list[tuple[Path, Path | None]] = []
     try:
         archive_path = temp_dir / zip_name
         checksum_payload = _request(checksum_asset["browser_download_url"], max_bytes=16 * 1024)
@@ -302,32 +331,36 @@ def _apply_update_if_available_locked(root: Path, log) -> bool:
         archive_path.write_bytes(archive_payload)
 
         staged_root = _stage_archive(archive_path, temp_dir, version_label)
-        backup_root = temp_dir / "backup"
-        backup_root.mkdir()
+        # Keep backups on the installation volume, not the system temp volume.
+        # Rollback still stages each restored file beside its destination.
+        backup_root = Path(tempfile.mkdtemp(prefix=".theme-maker-update-backup-", dir=root))
         changed, requirements_changed = _apply_staged_files(root, staged_root, backup_root)
         if requirements_changed:
             try:
                 _install_requirements(root, log)
-            except Exception:
-                # Restore project files if dependency installation failed.
-                for target, backup in reversed(changed):
-                    try:
-                        if backup and backup.exists():
-                            os.replace(backup, target)
-                        else:
-                            target.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+            except Exception as exc:
+                failures = _rollback_changed_files(changed)
+                if failures:
+                    raise UpdateRollbackError(
+                        "Не удалось полностью откатить обновление после ошибки установки "
+                        "зависимостей. Резервные копии сохранены в "
+                        f"{backup_root}: " + "; ".join(failures)
+                    ) from exc
                 raise
 
         state_path.write_text(json.dumps({"last_successful_check": now}, ensure_ascii=False), encoding="utf-8")
         _log(log, f"Обновление установлено: {current_text} → {version_label}.")
         return True
     except Exception as exc:
+        preserve_backup = isinstance(exc, UpdateRollbackError)
         _log(log, f"Обновление не установлено; запуск продолжится на текущих файлах: {exc}")
+        if preserve_backup and backup_root:
+            _log(log, f"Резервная копия оставлена для ручного восстановления: {backup_root}")
         return False
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+        if backup_root and not preserve_backup:
+            shutil.rmtree(backup_root, ignore_errors=True)
 
 
 
