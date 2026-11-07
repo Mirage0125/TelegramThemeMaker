@@ -17,8 +17,10 @@ from UpdateManager import (
 
 
 class UpdaterSafetyTests(unittest.TestCase):
-    def test_assets_are_preserved_by_updater(self):
+    def test_assets_and_dependency_overlay_are_preserved_by_updater(self):
         self.assertIn("assets", PRESERVED_ROOT_ITEMS)
+        self.assertIn(".update-packages", PRESERVED_ROOT_ITEMS)
+        self.assertIn(".update-packages.rollback", PRESERVED_ROOT_ITEMS)
 
     def test_archive_staging_skips_assets_but_keeps_application_files(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -34,11 +36,17 @@ class UpdaterSafetyTests(unittest.TestCase):
                 archive.writestr("TelegramThemeMaker/requirements.txt", "aiogram>=3.13,<4.0")
                 archive.writestr("TelegramThemeMaker/defaults/welcome.png", b"default image")
                 archive.writestr("TelegramThemeMaker/assets/welcome.png", b"replacement image")
+                archive.writestr("TelegramThemeMaker/.update-packages/old_package.py", "OLD = True")
+                archive.writestr("TelegramThemeMaker/.update-packages.rollback/backup.py", "BACKUP = True")
+                archive.writestr("TelegramThemeMaker/.update-packages-stage-abandoned/partial.py", "BROKEN = True")
 
             staged = _stage_archive(archive_path, root / "stage", "3.9.0")
             self.assertTrue((staged / "bot.py").exists())
             self.assertEqual((staged / "defaults" / "welcome.png").read_bytes(), b"default image")
             self.assertFalse((staged / "assets" / "welcome.png").exists())
+            self.assertFalse((staged / ".update-packages").exists())
+            self.assertFalse((staged / ".update-packages.rollback").exists())
+            self.assertFalse((staged / ".update-packages-stage-abandoned").exists())
 
     def test_update_state_write_failure_does_not_raise_or_leave_partial_marker(self):
         with tempfile.TemporaryDirectory() as directory:
