@@ -109,6 +109,28 @@ class SQLiteStorage(BaseStorage):
             return {}
         return value if isinstance(value, dict) else {}
 
+
+
+    async def get_all_data(self) -> list[dict[str, Any]]:
+        """Return every persisted FSM data object; fail closed on unreadable rows."""
+        rows = self._db().execute(
+            "SELECT data_json FROM fsm_sessions"
+        ).fetchall()
+        sessions: list[dict[str, Any]] = []
+        for (payload,) in rows:
+            try:
+                value = json.loads(payload)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    "Cannot safely enumerate FSM sessions for wallpaper cleanup."
+                ) from exc
+            if not isinstance(value, dict):
+                raise RuntimeError(
+                    "Cannot safely enumerate FSM sessions: stored data is not an object."
+                )
+            sessions.append(value)
+        return sessions
+
     async def close(self) -> None:
         if self._connection is not None:
             self._connection.close()
