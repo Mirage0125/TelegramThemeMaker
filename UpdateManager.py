@@ -298,7 +298,13 @@ def _activate_dependency_overlay(root: Path, staging: Path, log) -> None:
     """Switch to a fully installed dependency set, restoring the previous set on failure."""
     active = root / ".update-packages"
     backup = root / ".update-packages.rollback"
-    recover_dependency_overlay(root, log)
+    # Resolve an orphaned previous swap without deleting the staging directory
+    # supplied by the current installation attempt.
+    if backup.exists():
+        if active.exists():
+            shutil.rmtree(backup)
+        else:
+            os.replace(backup, active)
 
     had_active = active.exists()
     if had_active:
