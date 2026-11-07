@@ -63,12 +63,9 @@ class InstanceLockTests(unittest.TestCase):
 
                 # Repeated activation must not add duplicate path entries.
                 self.assertTrue(enable_dependency_overlay(root))
-                normalized = os.path.normcase(os.path.normpath(os.path.abspath(str(overlay))))
                 occurrences = [
                     entry for entry in sys.path
-                    if os.path.normcase(
-                        os.path.normpath(os.path.abspath(entry or os.curdir))
-                    ) == normalized
+                    if entry and Path(entry).resolve() == overlay.resolve()
                 ]
                 self.assertEqual(len(occurrences), 1)
 
