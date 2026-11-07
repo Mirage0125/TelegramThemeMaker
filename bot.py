@@ -66,6 +66,20 @@ def validate_image_dimensions(image: Image.Image) -> None:
         )
 
 
+class ImageTooLargeError(ValueError):
+    """Raised when an uploaded image exceeds the configured byte limit."""
+
+
+def photo_error_text(language: str, error: Exception, source: str) -> str:
+    """Keep image-upload errors in the user's selected interface language."""
+    if isinstance(error, ImageTooLargeError):
+        return tr(language, "image_too_large")
+    if language == "en":
+        key = "image_url_error" if source == "url" else "image_error"
+        return tr(language, key)
+    return tr(language, "photo_progress_error", error=html.escape(str(error)))
+
+
 class ProgressBytesIO(io.BytesIO):
     """A BytesIO download target that reports real byte-based progress."""
 
@@ -83,7 +97,7 @@ class ProgressBytesIO(io.BytesIO):
 
     def write(self, data: bytes) -> int:
         if self.tell() + len(data) > self.max_bytes:
-            raise ValueError("Изображение больше 12 МБ.")
+            raise ImageTooLargeError("Изображение больше 12 МБ.")
         written = super().write(data)
         if self.total_size and self.progress_callback:
             percent = min(100, int(self.tell() * 100 / self.total_size))
@@ -1751,13 +1765,13 @@ async def safe_download_image(url: str, progress_callback=None) -> bytes:
                     raise ValueError("Это не прямая ссылка на файл картинки. Скачай изображение и отправь его файлом.")
                 length = int(response.headers.get("Content-Length", "0") or 0)
                 if length > MAX_IMAGE_BYTES:
-                    raise ValueError("Изображение больше 12 МБ.")
+                    raise ImageTooLargeError("Изображение больше 12 МБ.")
                 data = bytearray()
                 last_reported_step = 0
                 async for chunk in response.content.iter_chunked(64 * 1024):
                     data.extend(chunk)
                     if len(data) > MAX_IMAGE_BYTES:
-                        raise ValueError("Изображение больше 12 МБ.")
+                        raise ImageTooLargeError("Изображение больше 12 МБ.")
                     if progress_callback and length > 0:
                         percent = min(100, int(len(data) * 100 / length))
                         step = percent // 20
@@ -1797,7 +1811,7 @@ async def download_telegram_image(message: Message, bot: Bot, progress_callback=
         if not doc.mime_type or not doc.mime_type.startswith("image/"):
             raise ValueError("Это не изображение. Отправь JPG, PNG или WebP.")
         if doc.file_size and doc.file_size > MAX_IMAGE_BYTES:
-            raise ValueError("Изображение больше 12 МБ.")
+            raise ImageTooLargeError("Изображение больше 12 МБ.")
         file_id = doc.file_id
     else:
         raise ValueError("Отправь картинку как фото или как файл.")
@@ -1811,7 +1825,7 @@ async def download_telegram_image(message: Message, bot: Bot, progress_callback=
     )
 
     if file_obj.file_size and file_obj.file_size > MAX_IMAGE_BYTES:
-        raise ValueError("Изображение больше 12 МБ.")
+        raise ImageTooLargeError("Изображение больше 12 МБ.")
 
     async def download_once():
         # Use a fresh buffer for every attempt so a partial failed download is discarded.
@@ -1924,7 +1938,10 @@ async def start(message: Message, state: FSMContext):
     await state.clear()
     language = user_language(message.from_user.id)
     await state.update_data(theme=default_theme(language), wallpaper_path=None)
-    await send_language_prompt(message)
+    if LANGUAGE_PREFERENCES.has_language(message.from_user.id):
+        await send_welcome(message, language)
+    else:
+        await send_language_prompt(message)
 
 
 @dp.callback_query(F.data == "language")
@@ -2066,11 +2083,11 @@ async def image_upload(message: Message, state: FSMContext, bot: Bot):
         )
         await apply_image_to_theme(message, state, raw, progress_message)
     except Exception as exc:
-        # Catch Telegram transport errors too, so the user never sees a frozen progress message.
+        # Keep transport and processing errors in the language selected by the user.
         print(f"Photo upload or processing failed ({type(exc).__name__}).")
         try:
             await progress_message.edit_text(
-                tr(language, "photo_progress_error", error=html.escape(str(exc))),
+                photo_error_text(language, exc, "upload"),
                 parse_mode=ParseMode.HTML,
             )
         except Exception as edit_exc:
@@ -2100,7 +2117,7 @@ async def image_url(message: Message, state: FSMContext):
         print(f"Photo URL download failed ({type(exc).__name__}).")
         try:
             await progress_message.edit_text(
-                tr(language, "photo_progress_error", error=html.escape(str(exc))),
+                photo_error_text(language, exc, "url"),
                 parse_mode=ParseMode.HTML,
             )
         except Exception as edit_exc:
