@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,6 +14,9 @@ from UpdateManager import (
     _save_update_state,
     _stage_archive,
     recover_dependency_overlay,
+    recover_update_transaction,
+    _begin_update_transaction,
+    _write_transaction_journal,
 )
 
 
@@ -21,6 +25,7 @@ class UpdaterSafetyTests(unittest.TestCase):
         self.assertIn("assets", PRESERVED_ROOT_ITEMS)
         self.assertIn(".update-packages", PRESERVED_ROOT_ITEMS)
         self.assertIn(".update-packages.rollback", PRESERVED_ROOT_ITEMS)
+        self.assertIn(".update-transaction", PRESERVED_ROOT_ITEMS)
 
     def test_archive_staging_skips_assets_but_keeps_application_files(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -179,6 +184,112 @@ class UpdaterSafetyTests(unittest.TestCase):
             self.assertTrue((active / "previous_package.py").is_file())
             self.assertFalse(backup.exists())
             self.assertFalse(abandoned.exists())
+
+
+
+    def test_interrupted_project_and_dependency_update_rolls_back_as_one_transaction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staged = root / "new-release"
+            staged.mkdir()
+            (staged / "bot.py").write_text("NEW_BOT = True\n", encoding="utf-8")
+            (staged / "VERSION.txt").write_text("3.10.0\n", encoding="utf-8")
+            (staged / "requirements.txt").write_text("example-package==2.0\n", encoding="utf-8")
+
+            (root / "bot.py").write_text("OLD_BOT = True\n", encoding="utf-8")
+            (root / "VERSION.txt").write_text("3.9.0\n", encoding="utf-8")
+            (root / "requirements.txt").write_text("example-package==1.0\n", encoding="utf-8")
+            active = root / ".update-packages"
+            active.mkdir()
+            (active / "previous.py").write_text("OLD_DEPENDENCY = True\n", encoding="utf-8")
+
+            transaction = _begin_update_transaction(root, staged)
+            journal = json.loads((transaction / "journal.json").read_text(encoding="utf-8"))
+            journal["overlay_update"] = True
+            _write_transaction_journal(transaction, journal)
+
+            # Simulate a crash after new dependencies and some project files became active.
+            backup_overlay = transaction / "dependency-overlay-backup"
+            active.rename(backup_overlay)
+            active.mkdir()
+            (active / "new.py").write_text("NEW_DEPENDENCY = True\n", encoding="utf-8")
+            (root / "bot.py").write_text("NEW_BOT = True\n", encoding="utf-8")
+            (root / "VERSION.txt").write_text("3.10.0\n", encoding="utf-8")
+            (root / "requirements.txt").write_text("example-package==2.0\n", encoding="utf-8")
+
+            self.assertTrue(recover_update_transaction(root))
+
+            self.assertEqual((root / "bot.py").read_text(encoding="utf-8"), "OLD_BOT = True\n")
+            self.assertEqual((root / "VERSION.txt").read_text(encoding="utf-8"), "3.9.0\n")
+            self.assertEqual(
+                (root / "requirements.txt").read_text(encoding="utf-8"),
+                "example-package==1.0\n",
+            )
+            self.assertTrue((active / "previous.py").is_file())
+            self.assertFalse((active / "new.py").exists())
+            self.assertFalse(transaction.exists())
+
+    def test_interrupted_update_without_previous_overlay_removes_partial_new_overlay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staged = root / "new-release"
+            staged.mkdir()
+            (staged / "bot.py").write_text("NEW_BOT = True\n", encoding="utf-8")
+            (root / "bot.py").write_text("OLD_BOT = True\n", encoding="utf-8")
+
+            transaction = _begin_update_transaction(root, staged)
+            journal = json.loads((transaction / "journal.json").read_text(encoding="utf-8"))
+            journal["overlay_update"] = True
+            journal["overlay_existed"] = False
+            _write_transaction_journal(transaction, journal)
+
+            active = root / ".update-packages"
+            active.mkdir()
+            (active / "partial.py").write_text("PARTIAL = True\n", encoding="utf-8")
+            (root / "bot.py").write_text("NEW_BOT = True\n", encoding="utf-8")
+
+            recover_update_transaction(root)
+
+            self.assertEqual((root / "bot.py").read_text(encoding="utf-8"), "OLD_BOT = True\n")
+            self.assertFalse(active.exists())
+            self.assertFalse(transaction.exists())
+
+    def test_committed_transaction_keeps_new_files_and_only_cleans_backups(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staged = root / "new-release"
+            staged.mkdir()
+            (staged / "bot.py").write_text("NEW_BOT = True\n", encoding="utf-8")
+            (root / "bot.py").write_text("NEW_BOT = True\n", encoding="utf-8")
+
+            transaction = _begin_update_transaction(root, staged)
+            journal = json.loads((transaction / "journal.json").read_text(encoding="utf-8"))
+            journal["phase"] = "committed"
+            _write_transaction_journal(transaction, journal)
+
+            self.assertFalse(recover_update_transaction(root))
+            self.assertEqual((root / "bot.py").read_text(encoding="utf-8"), "NEW_BOT = True\n")
+            self.assertFalse(transaction.exists())
+
+    def test_pending_transaction_with_missing_backup_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            transaction = root / ".update-transaction"
+            (transaction / "files").mkdir(parents=True)
+            _write_transaction_journal(
+                transaction,
+                {
+                    "format": 1,
+                    "phase": "pending",
+                    "files": [{"path": "bot.py", "existed": True}],
+                    "overlay_existed": False,
+                    "overlay_update": False,
+                },
+            )
+
+            with self.assertRaisesRegex(UpdateError, "резервная копия"):
+                recover_update_transaction(root)
+            self.assertTrue(transaction.exists())
 
     def test_unsafe_archive_paths_are_rejected(self):
         for path in ("../outside.txt", "/absolute.txt", "TelegramThemeMaker/../../outside.txt"):
