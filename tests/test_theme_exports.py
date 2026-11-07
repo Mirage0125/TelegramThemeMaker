@@ -493,6 +493,67 @@ class ThemeExportTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "25 мегапикселей"):
                     bot.save_user_wallpaper(606, b"fake-image-data")
 
+
+
+    def test_wallpaper_cleanup_keeps_all_session_references_and_recent_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            user_dir = root / "606"
+            user_dir.mkdir()
+            active = user_dir / "wallpaper_aaaaaaaaaaaa.jpg"
+            stale = user_dir / "wallpaper_bbbbbbbbbbbb.jpg"
+            recent = user_dir / "wallpaper_cccccccccccc.jpg"
+            invalid_name = user_dir / "wallpaper-not-generated.jpg"
+            for path in (active, stale, recent, invalid_name):
+                path.write_bytes(b"image")
+
+            now = 2_000_000_000.0
+            old_time = now - 7200
+            recent_time = now - 120
+            os.utime(active, (old_time, old_time))
+            os.utime(stale, (old_time, old_time))
+            os.utime(recent, (recent_time, recent_time))
+            os.utime(invalid_name, (old_time, old_time))
+
+            removed = bot.cleanup_orphaned_wallpapers(
+                root,
+                [str(active)],
+                grace_seconds=3600,
+                now=now,
+            )
+
+            self.assertEqual(removed, 1)
+            self.assertTrue(active.exists(), "a wallpaper referenced by a saved session must survive")
+            self.assertFalse(stale.exists(), "an old unreferenced generated wallpaper should be removed")
+            self.assertTrue(recent.exists(), "recent files need a grace period for in-flight uploads")
+            self.assertTrue(invalid_name.exists(), "unrelated user files must never be removed")
+
+    def test_wallpaper_cleanup_does_not_touch_outside_paths_or_non_user_folders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside = root / "outside"
+            outside.mkdir()
+            outside_file = outside / "wallpaper_dddddddddddd.jpg"
+            outside_file.write_bytes(b"keep")
+            non_user_dir = root / "temporary"
+            non_user_dir.mkdir()
+            unrelated = non_user_dir / "wallpaper_eeeeeeeeeeee.jpg"
+            unrelated.write_bytes(b"keep")
+            now = 2_000_000_000.0
+            os.utime(outside_file, (now - 7200, now - 7200))
+            os.utime(unrelated, (now - 7200, now - 7200))
+
+            removed = bot.cleanup_orphaned_wallpapers(
+                root,
+                [str(outside_file)],
+                grace_seconds=3600,
+                now=now,
+            )
+
+            self.assertEqual(removed, 0)
+            self.assertTrue(outside_file.exists())
+            self.assertTrue(unrelated.exists())
+
     def test_android_message_timestamps_are_exported_as_muted_text(self):
         theme = self.theme.copy()
         theme["muted"] = "#778899"
