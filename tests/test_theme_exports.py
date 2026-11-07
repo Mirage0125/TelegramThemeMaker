@@ -372,6 +372,41 @@ class ThemeExportTests(unittest.TestCase):
         self.assertEqual(values["waveformBackgroundBubble_incoming"], "#ABCDEF: 0.35")
         self.assertEqual(values["waveformBackgroundBubble_outgoing"], "#ABCDEF: 0.35")
 
+    def test_desktop_export_uses_the_muted_text_color(self):
+        theme = self.theme.copy()
+        theme["text"] = "#112233"
+        theme["muted"] = "#778899"
+        theme["muted_auto"] = False
+
+        colors = bot.create_desktop_colors(theme)
+        self.assertEqual(colors["windowSubTextFg"], "#778899")
+        self.assertEqual(colors["dialogsDateFg"], "#778899")
+
+        palette = bot.desktop_palette_text(theme).decode("utf-8")
+        self.assertIn("windowSubTextFg: #778899;", palette)
+        self.assertIn("dialogsDateFg: #778899;", palette)
+
+    def test_macos_incoming_and_outgoing_bubble_opacity_is_exported(self):
+        theme = self.theme.copy()
+        theme["incoming"] = "#112233"
+        theme["incoming_opacity"] = 40
+        theme["outgoing"] = "#445566"
+        theme["outgoing_opacity"] = 60
+
+        exported = bot.create_macos_palette(theme).decode("utf-8")
+        values = dict(
+            line.split(" = ", 1)
+            for line in exported.splitlines()
+            if " = " in line
+        )
+
+        # The native macOS importer uses different alpha syntax for the two fields.
+        self.assertEqual(values["bubbleBackground_incoming"], "#112233: 0.40")
+        self.assertEqual(
+            values["bubbleBackground_outgoing"],
+            bot.alpha_hex("#445566", 60),
+        )
+
     def test_android_message_timestamps_are_exported_as_muted_text(self):
         theme = self.theme.copy()
         theme["muted"] = "#778899"
