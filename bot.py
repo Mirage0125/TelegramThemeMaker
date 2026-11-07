@@ -2236,6 +2236,11 @@ async def run_photo_processing(
             progress_message,
             expected_state=ThemeStates.processing_image.state,
         )
+        # Validation can return normally without applying a theme (for example,
+        # an oversized payload or an image with no usable colors). Do not leave
+        # the persisted FSM session marked as actively processing in that case.
+        if await state.get_state() == ThemeStates.processing_image.state:
+            await state.set_state(ThemeStates.waiting_image)
     except asyncio.CancelledError:
         try:
             await asyncio.wait_for(
@@ -2958,12 +2963,26 @@ def acquire_instance_lock():
     INSTANCE_LOCK_HANDLE = handle
 
 
+async def recover_interrupted_photo_processing() -> int:
+    """Restore photo sessions left in processing state by a previous bot process."""
+    storage = dp.storage
+    if not isinstance(storage, SQLiteStorage):
+        raise RuntimeError("Photo-session recovery requires the configured SQLite storage.")
+    return await storage.recover_interrupted_state(
+        ThemeStates.processing_image.state,
+        ThemeStates.waiting_image.state,
+    )
+
+
 async def main():
     try:
         acquire_instance_lock()
     except RuntimeError as exc:
         print(f"Ошибка запуска: {exc}")
         raise SystemExit(1) from exc
+    recovered_photo_sessions = await recover_interrupted_photo_processing()
+    if recovered_photo_sessions:
+        print(f"Восстановлено незавершённых загрузок фотографий: {recovered_photo_sessions}.")
     await cleanup_unused_wallpapers()
     bot = Bot(TOKEN)
     try:

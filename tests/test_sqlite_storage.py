@@ -47,5 +47,40 @@ class SQLiteStorageSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 await storage.close()
 
 
+    async def test_recover_interrupted_state_updates_only_matching_sessions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            storage = SQLiteStorage(Path(directory) / "fsm.sqlite3")
+            try:
+                interrupted = StorageKey(bot_id=1, chat_id=10, user_id=10)
+                unrelated = StorageKey(bot_id=1, chat_id=20, user_id=20)
+                await storage.set_state(interrupted, "ThemeStates:processing_image")
+                await storage.set_data(
+                    interrupted,
+                    {"theme": {"name": "saved"}, "wallpaper_path": "wallpaper.jpg"},
+                )
+                await storage.set_state(unrelated, "ThemeStates:waiting_color")
+
+                recovered = await storage.recover_interrupted_state(
+                    "ThemeStates:processing_image",
+                    "ThemeStates:waiting_image",
+                )
+
+                self.assertEqual(recovered, 1)
+                self.assertEqual(
+                    await storage.get_state(interrupted),
+                    "ThemeStates:waiting_image",
+                )
+                self.assertEqual(
+                    await storage.get_state(unrelated),
+                    "ThemeStates:waiting_color",
+                )
+                self.assertEqual(
+                    await storage.get_data(interrupted),
+                    {"theme": {"name": "saved"}, "wallpaper_path": "wallpaper.jpg"},
+                )
+            finally:
+                await storage.close()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -131,6 +131,23 @@ class SQLiteStorage(BaseStorage):
             sessions.append(value)
         return sessions
 
+    async def recover_interrupted_state(
+        self,
+        interrupted_state: str,
+        replacement_state: str,
+    ) -> int:
+        """Move sessions left in a transient state by a crashed process to a safe state."""
+        if not interrupted_state or not replacement_state:
+            raise ValueError("Both FSM states must be non-empty strings.")
+        db = self._db()
+        with db:
+            cursor = db.execute(
+                "UPDATE fsm_sessions SET state = ? WHERE state = ?",
+                (replacement_state, interrupted_state),
+            )
+            recovered_count = cursor.rowcount
+        return recovered_count
+
     async def close(self) -> None:
         if self._connection is not None:
             self._connection.close()

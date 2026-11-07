@@ -773,5 +773,41 @@ class ThemeExportTests(unittest.TestCase):
             asyncio.run(exercise(directory))
 
 
+    def test_photo_processing_restores_image_input_after_normal_early_return(self):
+        async def exercise():
+            key = object()
+            state = SimpleNamespace(
+                key=key,
+                get_state=AsyncMock(return_value=bot.ThemeStates.processing_image.state),
+                set_state=AsyncMock(),
+            )
+            message = SimpleNamespace(from_user=SimpleNamespace(id=9090))
+            progress = SimpleNamespace(edit_text=AsyncMock())
+
+            # Simulate apply_image_to_theme returning through a validation branch
+            # without clearing or changing the FSM state.
+            with (
+                patch.object(
+                    bot,
+                    "download_with_progress",
+                    new=AsyncMock(return_value=b"image-bytes"),
+                ),
+                patch.object(bot, "apply_image_to_theme", new=AsyncMock()),
+            ):
+                await bot.run_photo_processing(
+                    message,
+                    state,
+                    progress,
+                    "en",
+                    downloader=AsyncMock(),
+                    source="upload",
+                )
+
+            state.set_state.assert_awaited_once_with(bot.ThemeStates.waiting_image.state)
+
+        asyncio.run(exercise())
+
+
+
 if __name__ == "__main__":
     unittest.main()
